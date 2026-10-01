@@ -746,3 +746,36 @@ print(*fl.formatter(values, spacing=spacing), sep="|")
         "\N{MINUS SIGN}2°|\N{MINUS SIGN}1°|0°|1°|2°",
         "\N{MINUS SIGN}0.5|0.0|0.5",
     ]
+
+
+def test_unicode_format(ignore_matplotlibrc):
+    # Plain text with Unicode superscripts and symbols, where 'auto' writes
+    # mathtext for hour angles; degrees are written as with 'auto'
+    hours = AngleFormatterLocator(unit=u.deg, format_unit=u.hourangle)
+    values, spacing = [266.5] * u.deg, 15 * u.arcsec
+    assert hours.formatter(values, spacing, format="unicode") == ["17ʰ46ᵐ00ˢ"]
+    assert hours.formatter(values, spacing) == [
+        r"17$\mathregular{^h}$46$\mathregular{^m}$00$\mathregular{^s}$"
+    ]
+    degrees = AngleFormatterLocator(unit=u.deg)
+    values, spacing = [-28.9367] * u.deg, 1 * u.arcsec
+    assert degrees.formatter(values, spacing, format="unicode") == [
+        "\N{MINUS SIGN}28°56'12\""
+    ]
+    assert degrees.formatter(values, spacing, format="unicode") == degrees.formatter(
+        values, spacing
+    )
+    # Decimal values carry the unit's own Unicode symbol
+    decimal = AngleFormatterLocator(unit=u.deg, format_unit=u.hourangle, decimal=True)
+    assert decimal.formatter([22.5] * u.deg, 0.1 * u.hourangle, format="unicode") == [
+        "1.5ʰ"
+    ]
+    assert decimal.formatter([22.5] * u.deg, 0.1 * u.hourangle) == [
+        r"1.5 $\mathregular{^h}$"
+    ]
+    decimal = AngleFormatterLocator(unit=u.deg, decimal=True)
+    assert decimal.formatter([10.5] * u.deg, 0.1 * u.deg, format="unicode") == ["10.5°"]
+    decimal = AngleFormatterLocator(unit=u.deg, format_unit=u.arcmin, decimal=True)
+    assert decimal.formatter([0.5] * u.deg, 0.1 * u.arcmin, format="unicode") == [
+        "30.0′"
+    ]

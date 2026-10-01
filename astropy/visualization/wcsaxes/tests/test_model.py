@@ -448,3 +448,43 @@ def test_layout_with_text(ignore_matplotlibrc):
         ax, model, measure=measure, tick_size=5, pad=5, font_size=14
     )
     assert layout.coords[0].axis_labels == {}
+
+
+def test_text_format(ignore_matplotlibrc):
+    # With text_format 'unicode', the labels, the readout and the default
+    # axis labels have no mathtext
+    from matplotlib.figure import Figure
+
+    fig = Figure(figsize=(6, 4), dpi=100)
+    ax = fig.add_subplot(projection=celestial())
+    ax.set_xlim(-0.5, 99.5)
+    ax.set_ylim(-0.5, 79.5)
+    model = AxesModel.from_wcs(celestial())
+    assert model["ra"].spec().formatter == model["ra"].formatter
+
+    ra = layout_of_axes(ax, model).coords[0]
+    assert all("$" in text for text in ra.ticks.text)
+
+    model.text_format = "unicode"
+    ra = layout_of_axes(ax, model).coords[0]
+    assert ra.ticks.text and all("$" not in text for text in ra.ticks.text)
+    assert "ʰ" in "".join(ra.ticks.text)
+    assert "$" not in model["ra"].format_coord(266.4, format="unicode")
+
+    # A custom formatter is used as it is
+    model["ra"].set_major_formatter(lambda values, spacing=None: ["x"] * len(values))
+    assert layout_of_axes(ax, model).coords[0].ticks.text == ["x"] * len(ra.ticks.text)
+
+    one_d = WCS(naxis=1)
+    one_d.wcs.ctype = ["FREQ"]
+    one_d.wcs.cunit = ["Hz"]
+    one_d.wcs.set()
+    ax = fig.add_subplot(projection=one_d)
+    ax.set_xlim(-0.5, 99.5)
+    model = AxesModel.from_wcs(one_d)
+    assert (
+        layout_of_axes(ax, model).coords[0].axis_label_text
+        == "em.freq [$\\mathrm{Hz}$]"
+    )
+    model.text_format = "unicode"
+    assert layout_of_axes(ax, model).coords[0].axis_label_text == "em.freq [Hz]"

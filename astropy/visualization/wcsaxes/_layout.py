@@ -22,7 +22,11 @@ Conventions:
   ``angle``, ``tick_angle``, ``text`` and ``disp`` are dicts that map a spine
   name to a list with one entry per label, as in ``TickLabels``. ``angle`` is
   the spine normal at the tick, which is the direction of the label padding.
-  `tick_labels` makes one from the output of `place_ticks`.
+  `label_store` makes one from the output of `place_ticks`.
+* ``to_display`` converts data pixels to display pixels. `place_ticks` gives
+  it an (N, 2) array and `anchor_tick_labels` one ``(x, y)`` tuple, so a
+  function passed to both has to accept both, as one that starts with
+  ``numpy.asarray`` does.
 * A box is ``(x0, y0, x1, y1)`` or ``[[x0, y0], [x1, y1]]``. A matplotlib
   ``Bbox`` also works.
 """
@@ -53,6 +57,7 @@ __all__ = [
     "grid_lines",
     "gridline_path_codes",
     "keep_tick_labels",
+    "label_store",
     "lon_lat_path_codes",
     "place_ticks",
     "resample_spine",
@@ -61,7 +66,6 @@ __all__ = [
     "sort_using",
     "spine_midpoint",
     "spine_normal_angle",
-    "tick_labels",
     "wrap_angle_at",
 ]
 
@@ -772,7 +776,7 @@ def gridline_path_codes(world, pixel):
     return codes
 
 
-def tick_labels(placed):
+def label_store(placed):
     """
     Hold the major tick labels of a coordinate as ``TickLabels`` does.
 
@@ -929,7 +933,7 @@ def anchor_tick_labels(labels, visible_axes, to_display, pad, measure):
         The spines on which labels are shown.
     to_display : callable
         Converts the position ``(x, y)`` of a tick in data pixels to display
-        pixels.
+        pixels. It is given one tuple at a time.
     pad : float
         The gap between a tick and its label, plus the length of the tick if
         it points out, in display pixels.

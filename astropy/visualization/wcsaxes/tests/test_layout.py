@@ -65,13 +65,13 @@ from astropy.visualization.wcsaxes._layout import (
     axis_label_position,
     grid_lines,
     keep_tick_labels,
+    label_store,
     place_ticks,
     resample_spine,
     simplify_labels,
     sort_labels,
     spine_midpoint,
     spine_normal_angle,
-    tick_labels,
 )
 from astropy.visualization.wcsaxes.coordinate_range import find_coordinate_range
 from astropy.wcs import WCS
@@ -159,7 +159,7 @@ def layout(ctype, crval, cdelt, shape, spacing, rectangular):
         )
         lines = grid_lines(spec, ranges, 50, p2w.transform, p2w.world_to_pixel)
 
-        labels = tick_labels(placed)
+        labels = label_store(placed)
         sort_labels(labels)
         simplify_labels(labels, "0123456789.+-")
         anchors = anchor_tick_labels(labels, list("brtl"), to_display, 8.0, measure)

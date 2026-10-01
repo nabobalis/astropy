@@ -16,7 +16,7 @@ from astropy import units as u
 from astropy.utils.decorators import deprecated_renamed_argument
 from astropy.utils.exceptions import AstropyDeprecationWarning
 
-from ._layout import CoordSpec, grid_lines, place_ticks, wrap_angle_at
+from ._layout import CoordSpec, grid_lines, label_store, place_ticks, wrap_angle_at
 from .axislabels import AxisLabels
 from .formatter_locator import AngleFormatterLocator, ScalarFormatterLocator
 from .frame import EllipticalFrame, RectangularFrame1D
@@ -1046,26 +1046,28 @@ class CoordinateHelper:
                 minor_axis_displacement=disp,
             )
 
-        # Kept apart from the loop above: a formatter that returns fewer
-        # labels than there are ticks drops labels, not ticks.
-        for axis, world, (x, y), angle, normal, disp, txt in zip(
-            major.axis,
-            major.world,
-            major.pixel,
-            major.angle,
-            major.normal,
-            major.disp,
-            placed.text,
-        ):
-            self._ticklabels.add(
-                axis=axis,
-                data=(x, y),
-                world=world,
-                angle=normal,
-                tick_angle=angle,
-                axis_displacement=disp,
-                text=txt,
-            )
+        # The labels go through label_store, as for any other caller of
+        # _layout. Kept apart from the loop above: a formatter that returns
+        # fewer labels than there are ticks drops labels, not ticks.
+        labels = label_store(placed)
+        for axis in labels.world:
+            for world, data, angle, tick_angle, disp, text in zip(
+                labels.world[axis],
+                labels.data[axis],
+                labels.angle[axis],
+                labels.tick_angle[axis],
+                labels.disp[axis],
+                labels.text[axis],
+            ):
+                self._ticklabels.add(
+                    axis=axis,
+                    data=data,
+                    world=world,
+                    angle=angle,
+                    tick_angle=tick_angle,
+                    axis_displacement=disp,
+                    text=text,
+                )
 
     def display_minor_ticks(self, display_minor_ticks):
         """

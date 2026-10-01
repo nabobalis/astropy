@@ -17,6 +17,7 @@ from functools import partial
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 from numpy.testing import assert_allclose, assert_array_equal
 
 from astropy import units as u
@@ -27,12 +28,14 @@ from astropy.visualization.wcsaxes._layout import (
     anchor_tick_labels,
     axis_label_position,
     count_overlaps,
+    elliptical_spines,
     grid_lines,
     gridline_path_codes,
     keep_tick_labels,
     label_store,
     lon_lat_path_codes,
     place_ticks,
+    rectangular_1d_spines,
     rectangular_spines,
     resample_spine,
     simplify_labels,
@@ -275,26 +278,37 @@ def test_layout_spec():
     assert spec.minor_locator is None
 
 
-def test_rectangular_spines():
-    # The same spines as RectangularFrame.sample gives WCSAxes
+@pytest.mark.parametrize(
+    "naxis, frame_class, spines_function, names",
+    [
+        (2, None, rectangular_spines, "brtl"),
+        (1, None, rectangular_1d_spines, "bt"),
+        (2, "EllipticalFrame", elliptical_spines, "chv"),
+    ],
+)
+def test_frame_spines(naxis, frame_class, spines_function, names):
+    # The same spines as the frame's sample() gives WCSAxes
     from matplotlib.figure import Figure
 
-    wcs = WCS(naxis=2)
-    wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
-    wcs.wcs.cdelt = [-0.01, 0.01]
-    ax = Figure().add_subplot(projection=wcs)
+    from astropy.visualization.wcsaxes.frame import EllipticalFrame
+
+    wcs = WCS(naxis=naxis)
+    wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"][:naxis] if naxis == 2 else ["FREQ"]
+    wcs.wcs.cdelt = [-0.01, 0.01][:naxis]
+    kwargs = {"frame_class": EllipticalFrame} if frame_class else {}
+    ax = Figure().add_subplot(projection=wcs, **kwargs)
     ax.set_xlim(-0.5, 99.5)
     ax.set_ylim(-0.5, 49.5)
     frame = ax.coords.frame
     expected = frame.sample(20)
-    spines = rectangular_spines(
+    spines = spines_function(
         ax.get_xlim(),
         ax.get_ylim(),
         20,
         frame.transform.transform,
         ax.transData.transform,
     )
-    assert list(spines) == list(expected) == ["b", "r", "t", "l"]
+    assert list(spines) == list(expected) == list(names)
     for axis in spines:
         assert_array_equal(spines[axis].data, expected[axis].data)
         assert_array_equal(spines[axis].world, expected[axis].world)

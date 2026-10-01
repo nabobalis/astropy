@@ -1,13 +1,13 @@
 # Licensed under a 3-clause BSD style license - see LICENSE.rst
 """
-Tick and grid geometry for WCSAxes that does not depend on matplotlib.
+Tick, grid and label geometry for WCSAxes that does not depend on matplotlib.
 
 This private module works out where the ticks of a coordinate cross the
-spines of a frame, in which direction they point, and where its grid lines
-run. It imports only numpy and astropy. The world coordinate transform, the
-display transform, the locator and the formatter all come in as callables,
-so a toolkit other than matplotlib can draw the same ticks and grid lines as
-WCSAxes.
+spines of a frame, in which direction they point, where its grid lines run,
+and where its tick labels go. It imports only numpy and astropy. The world
+coordinate transform, the display transform, the locator, the formatter and
+the text measurement all come in as callables, so a toolkit other than
+matplotlib can draw the same ticks, grid lines and tick labels as WCSAxes.
 
 Conventions:
 
@@ -15,10 +15,20 @@ Conventions:
   grid lines are in data pixels.
 * Display pixels have their origin at the lower left, y pointing up and one
   unit per device pixel, as in matplotlib. Every angle is in display space,
-  in degrees, counter-clockwise from +x.
+  in degrees, counter-clockwise from +x. Tick label positions and boxes are
+  in display pixels.
+* Tick labels are held by an object whose attributes ``world``, ``data``,
+  ``angle``, ``tick_angle``, ``text`` and ``disp`` are dicts that map a spine
+  name to a list with one entry per label, as in ``TickLabels``. ``angle`` is
+  the spine normal at the tick, which is the direction of the label padding.
+  `tick_labels` makes one from the output of `place_ticks`.
+* A box is ``(x0, y0, x1, y1)`` or ``[[x0, y0], [x1, y1]]``. A matplotlib
+  ``Bbox`` also works.
 """
 
+from collections import defaultdict
 from collections.abc import Callable
+from types import SimpleNamespace
 from typing import NamedTuple
 
 import numpy as np
@@ -35,12 +45,20 @@ __all__ = [
     "PlacedTicks",
     "SpineArrays",
     "TickTable",
+    "anchor_tick_labels",
+    "count_overlaps",
+    "find_start_of_last_number",
     "grid_lines",
     "gridline_path_codes",
+    "keep_tick_labels",
     "lon_lat_path_codes",
     "place_ticks",
     "resample_spine",
+    "simplify_labels",
+    "sort_labels",
+    "sort_using",
     "spine_normal_angle",
+    "tick_labels",
     "wrap_angle_at",
 ]
 
@@ -715,3 +733,330 @@ def gridline_path_codes(world, pixel):
     # or due to discontinuities in the projection.
 
     return codes
+
+
+def tick_labels(placed):
+    """
+    Hold the major tick labels of a coordinate as ``TickLabels`` does.
+
+    The labels are in the order of the ticks, and ready for `sort_labels`.
+
+    Parameters
+    ----------
+    placed : `PlacedTicks`
+        The ticks of the coordinate, from `place_ticks`.
+
+    Returns
+    -------
+    `types.SimpleNamespace`
+        The tick labels, as described in the module docstring. ``angle`` is
+        ``TickTable.normal`` and ``tick_angle`` is ``TickTable.angle``.
+    """
+    labels = SimpleNamespace(
+        world=defaultdict(list),
+        data=defaultdict(list),
+        angle=defaultdict(list),
+        tick_angle=defaultdict(list),
+        text=defaultdict(list),
+        disp=defaultdict(list),
+    )
+    m = placed.major
+    for axis, world, (x, y), angle, normal, disp, text in zip(
+        m.axis, m.world, m.pixel, m.angle, m.normal, m.disp, placed.text
+    ):
+        labels.world[axis].append(world)
+        labels.data[axis].append((x, y))
+        labels.angle[axis].append(normal)
+        labels.tick_angle[axis].append(angle)
+        labels.text[axis].append(text)
+        labels.disp[axis].append(disp)
+    return labels
+
+
+def sort_using(X, Y):
+    return [x for (y, x) in sorted(zip(Y, X))]
+
+
+def find_start_of_last_number(label, numerical_chars):
+    """
+    Given a label, find the index of the start of the last numerical value
+    in the label.
+
+    Parameters
+    ----------
+    label : str
+        The label to search.
+    numerical_chars : str
+        The characters that a number is made of, including the minus sign
+        used in the labels.
+    """
+    in_number = False
+    for j in range(len(label) - 1, -1, -1):
+        if in_number:
+            if label[j] not in numerical_chars:
+                return j + 1
+        elif label[j] in numerical_chars:
+            in_number = True
+
+
+def sort_labels(labels):
+    """
+    Sort tick labels by axis displacement, in place.
+
+    This allows us to figure out which parts of labels to not repeat.
+
+    Parameters
+    ----------
+    labels : object
+        The tick labels, as described in the module docstring.
+    """
+    for axis in labels.world:
+        labels.world[axis] = sort_using(labels.world[axis], labels.disp[axis])
+        labels.data[axis] = sort_using(labels.data[axis], labels.disp[axis])
+        labels.angle[axis] = sort_using(labels.angle[axis], labels.disp[axis])
+        labels.tick_angle[axis] = sort_using(labels.tick_angle[axis], labels.disp[axis])
+        labels.text[axis] = sort_using(labels.text[axis], labels.disp[axis])
+        labels.disp[axis] = sort_using(labels.disp[axis], labels.disp[axis])
+
+
+def simplify_labels(labels, numerical_chars):
+    """
+    Figure out which parts of labels can be dropped to avoid repetition.
+
+    The labels must already be sorted with `sort_labels`. Their text is
+    shortened in place.
+
+    Parameters
+    ----------
+    labels : object
+        The tick labels, as described in the module docstring.
+    numerical_chars : str
+        The characters that a number is made of, as given to
+        `find_start_of_last_number`.
+    """
+    for axis in labels.world:
+        t1 = labels.text[axis][0]
+        for i in range(1, len(labels.world[axis])):
+            t2 = labels.text[axis][i]
+
+            if t1 == t2:
+                # In this case, we still need to preserve the last segment
+                # of the label. We search backwards from the end, and
+                # search for a number, and we then search for the first
+                # non-number (and non-decimal place) character we can find.
+                start = find_start_of_last_number(t2, numerical_chars)
+            else:
+                start = 0
+                for j in range(min(len(t1), len(t2))):
+                    if t1[j] != t2[j]:
+                        start = find_start_of_last_number(t2[: j + 1], numerical_chars)
+                        break
+                else:
+                    # One of the strings is a prefix of the other (up to
+                    # the length of the shorter one) without any
+                    # differing character, so the entire overlapping
+                    # part can be considered shared and only the extra
+                    # trailing part of t2 (if any) needs to be shown.
+                    if len(t2) > len(t1):
+                        start = find_start_of_last_number(
+                            t2[: len(t1) + 1], numerical_chars
+                        )
+
+            if start != 0:
+                starts_dollar = t2.startswith("$")
+                labels.text[axis][i] = t2[start:]
+                if starts_dollar:
+                    labels.text[axis][i] = "$" + labels.text[axis][i]
+
+            # Remove any empty LaTeX inline math mode string
+            if labels.text[axis][i] == "$$":
+                labels.text[axis][i] = ""
+
+            t1 = t2
+
+
+def anchor_tick_labels(labels, visible_axes, to_display, pad, measure):
+    """
+    Find where to centre each tick label.
+
+    A label is moved away from its tick in the direction of the spine
+    normal, until its box clears the tick by ``pad``. It is also moved along
+    the spine towards the direction of the tick, by at most 60 degrees from
+    the normal.
+
+    Parameters
+    ----------
+    labels : object
+        The tick labels, as described in the module docstring.
+    visible_axes : list of str
+        The spines on which labels are shown.
+    to_display : callable
+        Converts the position ``(x, y)`` of a tick in data pixels to display
+        pixels.
+    pad : float
+        The gap between a tick and its label, plus the length of the tick if
+        it points out, in display pixels.
+    measure : callable
+        Called as ``measure(text, x, y)`` with the display position of the
+        tick, it returns the width and height of the label in display pixels.
+        To place labels as matplotlib does, these are what
+        ``Text.get_window_extent`` gives for one line of text: the advance
+        width, and the font's ascender plus descender, unless the ink is
+        taller.
+
+    Returns
+    -------
+    dict
+        Maps each spine in ``visible_axes`` to a dict from the index of a label
+        to the display position ``(x, y)`` of its centre. Empty labels are
+        left out.
+    """
+    xy = {axis: {} for axis in visible_axes}
+
+    for axis in visible_axes:
+        for i in range(len(labels.world[axis])):
+            # In the event that the label is empty (which is not expected
+            # but could happen in unforeseen corner cases), we should just
+            # skip to the next label.
+            if labels.text[axis][i] == "":
+                continue
+
+            x, y = to_display(labels.data[axis][i])
+
+            # Set initial position and find bounding box
+            width, height = measure(labels.text[axis][i], x, y)
+
+            # The pad direction (typically perpendicular to the spine)
+            pad_angle = np.radians(labels.angle[axis][i])
+            px = np.cos(pad_angle)
+            py = np.sin(pad_angle)
+
+            # If the tick angle is NaN, use the pad angle for the tick angle
+            tick_angle = (
+                np.radians(labels.tick_angle[axis][i])
+                if not np.isnan(labels.tick_angle[axis][i])
+                else pad_angle
+            )
+            tx = np.cos(tick_angle)
+            ty = np.sin(tick_angle)
+
+            # Set anchor point for label where the pad direction intersects bounding box
+            with np.errstate(divide="ignore"):
+                if np.abs(py / px) < np.abs(height / width):
+                    ax = width / 2 * np.sign(px)
+                    ay = width / 2 * py / np.abs(px)
+                else:
+                    ax = height / 2 * px / np.abs(py)
+                    ay = height / 2 * np.sign(py)
+
+            # Extract the component of the tick direction perpendicular to the pad direction
+            scale = tx * px + ty * py
+            vx = tx - px * scale
+            vy = ty - py * scale
+
+            # We scale the above vector for adding to the pad direction to get a combined
+            # displacement.  When the tick direction is close to the pad direction, the scaling
+            # is such that the displacement direction is exactly the tick direction.  When the
+            # tick direction is close to perpendicular to the pad direction, we cap the scaling,
+            # which means that the effective tick direction is never more than 60 degrees
+            # perpendicular to the pad direction.  This prevents pushing the tick label too far
+            # away from the tick.
+            scale = np.max([scale, 0.5])  # 0.5 == cos(60 deg)
+            vx /= scale
+            vy /= scale
+
+            # Pad the anchor point in the combined displacement direction
+            dx = ax + (vx + px) * pad
+            dy = ay + (vy + py) * pad
+
+            xy[axis][i] = (x - dx, y - dy)
+
+    return xy
+
+
+def count_overlaps(box, boxes):
+    """
+    Count the boxes that overlap a box.
+
+    This is ``Bbox.count_overlaps`` from matplotlib, with the same swaps and
+    comparisons: boxes that only touch do not overlap, a box whose corners
+    are reversed is swapped first, and a comparison with NaN is false.
+
+    Parameters
+    ----------
+    box : array-like
+        The box.
+    boxes : list of array-like
+        The boxes to compare with.
+
+    Returns
+    -------
+    int
+        The number of ``boxes`` that overlap ``box``.
+    """
+    ax0, ay0, ax1, ay1 = np.asarray(box, dtype=float).reshape(4)
+    if ax1 < ax0:
+        ax0, ax1 = ax1, ax0
+    if ay1 < ay0:
+        ay0, ay1 = ay1, ay0
+    bx0, by0, bx1, by1 = (
+        np.array([np.asarray(b, dtype=float).reshape(4) for b in boxes])
+        .reshape(-1, 4)
+        .T
+    )
+    swap = bx1 < bx0
+    bx0, bx1 = np.where(swap, bx1, bx0), np.where(swap, bx0, bx1)
+    swap = by1 < by0
+    by0, by1 = np.where(swap, by1, by0), np.where(swap, by0, by1)
+    return int(
+        np.count_nonzero(~((bx1 <= ax0) | (by1 <= ay0) | (bx0 >= ax1) | (by0 >= ay1)))
+    )
+
+
+def keep_tick_labels(labels, visible_axes, extent, exclude_overlapping, existing):
+    """
+    Choose the tick labels to draw, in drawing order.
+
+    This is a generator, so that the caller can draw each label as soon as
+    it is yielded, before the next label is measured.
+
+    Parameters
+    ----------
+    labels : object
+        The tick labels, as described in the module docstring.
+    visible_axes : list of str
+        The spines on which labels are shown.
+    extent : callable
+        Called as ``extent(axis, i)``, it returns the box of label ``i`` on
+        spine ``axis``, in display pixels, or None if the label is empty.
+    exclude_overlapping : bool
+        Whether to drop a label that overlaps one already kept, or one of
+        ``existing``.
+    existing : list
+        The boxes of the tick labels of the coordinates drawn before.
+
+    Yields
+    ------
+    tuple
+        ``(axis, i, box)`` for each label to draw, with ``box`` as returned
+        by ``extent``.
+    """
+    kept = []
+
+    for axis in visible_axes:
+        if axis == "#":
+            continue
+
+        for i in range(len(labels.world[axis])):
+            # With matplotlib, this also sets the label text, position and
+            # alignment
+            bb = extent(axis, i)
+            if bb is None:
+                continue
+
+            # TODO: the problem here is that we might get rid of a label
+            # that has a key starting bit such as -0:30 where the -0
+            # might be dropped from all other labels.
+            if not exclude_overlapping or count_overlaps(bb, kept + existing) == 0:
+                kept.append(bb)
+                yield axis, i, bb

@@ -1,7 +1,7 @@
 # Licensed under a 3-clause BSD style license - see LICENSE.rst
 """
-Tests for the tick and grid geometry in ``wcsaxes._layout``, which does not
-need matplotlib.
+Tests for the tick, grid and tick label geometry in ``wcsaxes._layout``,
+which does not need matplotlib.
 """
 
 import json
@@ -14,6 +14,7 @@ import pytest
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 from matplotlib.path import Path
+from matplotlib.transforms import Bbox
 from numpy.testing import assert_allclose, assert_array_equal
 
 from astropy.visualization.wcsaxes import conf
@@ -22,6 +23,8 @@ from astropy.visualization.wcsaxes._layout import (
     MOVETO,
     CoordSpec,
     SpineArrays,
+    anchor_tick_labels,
+    count_overlaps,
     grid_lines,
     gridline_path_codes,
     place_ticks,
@@ -32,10 +35,14 @@ from astropy.visualization.wcsaxes.coordinate_range import find_coordinate_range
 from astropy.wcs import WCS
 
 # Runs in a subprocess in which matplotlib cannot be imported. It places the
-# ticks and samples the grid lines of a TAN image, and of an all-sky AIT image
-# whose corners are off the sky, from plain numpy inputs: 100 samples per
-# spine, 50 per grid line, a display transform of 2 * data + 10, and a locator
-# and a formatter that are plain functions.
+# ticks, samples the grid lines and lays out the tick labels of a TAN image,
+# and of an all-sky AIT image whose corners are off the sky, from plain numpy
+# inputs: 100 samples per spine, 50 per grid line, a display transform of
+# 2 * data + 10, a locator and a formatter that are plain functions, and text
+# that is 7 pixels wide per character and 12 pixels high. Labels are shown on
+# all four spines and overlapping labels are dropped. They avoid a box drawn
+# before, which covers the middle label on the bottom spine of the TAN image,
+# and the labels of the second coordinate avoid those of the first.
 NO_MATPLOTLIB = """
 import json
 import sys
@@ -49,10 +56,15 @@ from astropy.visualization.wcsaxes._layout import (
     MOVETO,
     CoordSpec,
     SpineArrays,
+    anchor_tick_labels,
     grid_lines,
+    keep_tick_labels,
     place_ticks,
     resample_spine,
+    simplify_labels,
+    sort_labels,
     spine_normal_angle,
+    tick_labels,
 )
 from astropy.visualization.wcsaxes.coordinate_range import find_coordinate_range
 from astropy.wcs import WCS
@@ -70,7 +82,7 @@ class PixelToWorld:
 
 
 def to_display(xy):
-    return 2.0 * xy + 10.0
+    return 2.0 * np.asarray(xy) + 10.0
 
 
 def from_display(xy):
@@ -90,7 +102,12 @@ def minor_locator(spacing, frequency, vmin, vmax):
 
 
 def formatter(values, spacing):
-    return [f"{v:g}" for v in values.to_value(u.deg)]
+    # Degrees and arcminutes, so that simplify_labels has a prefix to drop
+    return [f"{int(v)}d{round(abs(v) % 1 * 60):02d}m" for v in values.to_value(u.deg)]
+
+
+def measure(text, x, y):
+    return 7.0 * len(text), 12.0
 
 
 def layout(ctype, crval, cdelt, shape, spacing):
@@ -117,6 +134,7 @@ def layout(ctype, crval, cdelt, shape, spacing):
     wraps = [360 * u.deg, None]
     ranges = find_coordinate_range(p2w, [x0, x1, y0, y1], types, [u.deg] * 2, wraps)
     result = []
+    existing = [(100.0, -10.0, 110.0, 0.0)]
     for i in range(2):
         spec = CoordSpec(
             coord_index=i,
@@ -133,6 +151,22 @@ def layout(ctype, crval, cdelt, shape, spacing):
             spec, ranges[i], spines, p2w.transform, to_display, from_display
         )
         lines = grid_lines(spec, ranges, 50, p2w.transform, p2w.world_to_pixel)
+
+        labels = tick_labels(placed)
+        sort_labels(labels)
+        simplify_labels(labels, "0123456789.+-")
+        anchors = anchor_tick_labels(labels, list("brtl"), to_display, 8.0, measure)
+
+        def extent(axis, i):
+            if labels.text[axis][i] == "":
+                return None
+            x, y = anchors[axis][i]
+            width, height = measure(labels.text[axis][i], x, y)
+            return (x - width / 2, y - height / 2, x + width / 2, y + height / 2)
+
+        kept = list(keep_tick_labels(labels, list("brtl"), extent, True, existing))
+        existing += [box for _, _, box in kept]
+
         result.append(
             {
                 "axis": "".join(placed.major.axis),
@@ -147,6 +181,11 @@ def layout(ctype, crval, cdelt, shape, spacing):
                 "grid_pixel": [
                     pixel[[0, 25, -1]].ravel().tolist() for pixel, _ in lines
                 ],
+                "label_text": dict(labels.text),
+                "anchor": [
+                    [float(x), float(y)] for xy in anchors.values() for x, y in xy.values()
+                ],
+                "kept": " ".join(f"{axis}{i}" for axis, i, _ in kept),
             }
         )
     return result
@@ -159,6 +198,8 @@ print(json.dumps({"tan": tan, "ait": ait}))
 
 # The output of NO_MATPLOTLIB, rounded to 6 decimals. For each grid line it
 # gives the indices of the MOVETO codes, and the first, middle and last vertex.
+# For the tick labels it gives the text after simplification, the display
+# position of each label centre, and the labels kept, as spine and index.
 EXPECTED = {
     "tan": [
         {
@@ -188,7 +229,7 @@ EXPECTED = {
                 -89.975836,
                 -89.951673,
             ],
-            "text": ["266.3", "266.35", "266.4", "266.45", "266.5"] * 2,
+            "text": ["266d18m", "266d21m", "266d24m", "266d27m", "266d30m"] * 2,
             "minor": "b" * 9 + "t" * 9,
             "grid_moveto": [[0]] * 5,
             "grid_pixel": [
@@ -198,6 +239,26 @@ EXPECTED = {
                 [27.633628, -8.507039, 27.612965, 40.487274, 27.593128, 87.521816],
                 [5.767234, -8.520914, 5.725908, 40.473429, 5.686235, 87.508],
             ],
+            # Labels are sorted along each spine, left to right on the bottom
+            # spine and right to left on the top one, and simplified.
+            "label_text": {
+                "b": ["266d30m", "27m", "24m", "21m", "18m"],
+                "t": ["266d18m", "21m", "24m", "27m", "30m"],
+            },
+            "anchor": [
+                [21.527685, -5.0],
+                [65.263876, -5.0],
+                [109.0, -5.0],
+                [152.736124, -5.0],
+                [196.472315, -5.0],
+                [196.620768, 183.0],
+                [152.810351, 183.0],
+                [109.0, 183.0],
+                [65.189649, 183.0],
+                [21.379232, 183.0],
+            ],
+            # The box drawn before hides the middle label on the bottom spine.
+            "kept": "b0 b1 b3 b4 t0 t1 t2 t3 t4",
         },
         {
             "axis": "rrrlll",
@@ -218,7 +279,7 @@ EXPECTED = {
                 -359.945349,
                 -359.945462,
             ],
-            "text": ["-28.95", "-28.9", "-28.85"] * 2,
+            "text": ["-28d57m", "-28d54m", "-28d51m"] * 2,
             "minor": "r" * 7 + "l" * 7,
             "grid_moveto": [[0]] * 3,
             "grid_pixel": [
@@ -226,6 +287,19 @@ EXPECTED = {
                 [109.546277, 39.465261, 48.274567, 39.499986, -10.546277, 39.465261],
                 [109.575204, 64.465306, 48.273977, 64.499992, -10.575204, 64.465306],
             ],
+            "label_text": {
+                "r": ["-28d57m", "54m", "51m"],
+                "l": ["-28d51m", "54m", "57m"],
+            },
+            "anchor": [
+                [241.5, 38.943913],
+                [227.5, 88.944041],
+                [227.5, 138.94417],
+                [-23.5, 138.944323],
+                [-9.5, 88.944196],
+                [-9.5, 38.944068],
+            ],
+            "kept": "r0 r1 r2 l0 l1 l2",
         },
     ],
     "ait": [
@@ -258,7 +332,7 @@ EXPECTED = {
                 -26.320427,
                 -89.970028,
             ],
-            "text": ["60", "120", "240", "300", "0"] * 2,
+            "text": ["60d00m", "120d00m", "240d00m", "300d00m", "0d00m"] * 2,
             "minor": "b" * 11 + "t" * 11,
             "grid_moveto": [[0]] * 6,
             "grid_pixel": [
@@ -269,13 +343,33 @@ EXPECTED = {
                 [149.5, -6.528468, 264.042493, 76.620697, 149.5, 155.528468],
                 [149.5, -6.528468, 208.793549, 76.401429, 149.5, 155.528468],
             ],
+            "label_text": {
+                "b": ["120d00m", "60d00m", "0d00m", "300d00m", "240d00m"],
+                "t": ["240d00m", "300d00m", "0d00m", "60d00m", "120d00m"],
+            },
+            # The ticks are oblique, so each label is also moved along the
+            # spine, towards the direction of its tick.
+            "anchor": [
+                [265.515669, -5.0],
+                [296.85816, -5.0],
+                [308.996898, -5.0],
+                [320.828012, -5.0],
+                [352.450595, -5.0],
+                [352.314655, 323.0],
+                [318.877611, 323.0],
+                [308.995815, 323.0],
+                [299.048641, 323.0],
+                [265.6587, 323.0],
+            ],
+            # Every other label overlaps its neighbour and is dropped.
+            "kept": "b0 b2 b4 t0 t2 t4",
         },
         {
             "axis": "rl",
             "world": [0.0, 0.0],
             "pixel": [[299.5, 74.5], [-0.5, 74.5]],
             "angle": [180.000019, -1.8e-05],
-            "text": ["0", "0"],
+            "text": ["0d00m", "0d00m"],
             "minor": "bbrttl",
             # Each latitude line breaks where it crosses the longitude seam,
             # between samples 24 and 25. The spacing of 50 degrees keeps the
@@ -287,6 +381,9 @@ EXPECTED = {
                 [149.5, 74.5, 308.938696, 74.5, 149.5, 74.5],
                 [149.5, 122.928485, 252.55846, 135.941713, 149.5, 122.928485],
             ],
+            "label_text": {"r": ["0d00m"], "l": ["0d00m"]},
+            "anchor": [[634.5, 159.000003], [-16.5, 159.000003]],
+            "kept": "r0 l0",
         },
     ],
 }
@@ -313,6 +410,9 @@ def test_layout_without_matplotlib():
             assert_allclose(
                 actual["grid_pixel"], expected["grid_pixel"], rtol=0, atol=1e-6
             )
+            assert actual["label_text"] == expected["label_text"]
+            assert_allclose(actual["anchor"], expected["anchor"], rtol=0, atol=1e-6)
+            assert actual["kept"] == expected["kept"]
 
 
 def test_path_codes_match_matplotlib():
@@ -326,6 +426,47 @@ def test_gridline_path_codes():
     assert_array_equal(
         gridline_path_codes(np.zeros((5, 2)), pixel),
         [MOVETO, LINETO, MOVETO, MOVETO, LINETO],
+    )
+
+
+def test_count_overlaps_matches_matplotlib():
+    # Corners on a small integer grid give many boxes that only touch, and
+    # many whose corners are reversed. One case in three has a NaN corner.
+    rng = np.random.default_rng(0)
+    for trial in range(2000):
+        corners = rng.integers(0, 6, size=(8, 2, 2)).astype(float)
+        if trial % 3 == 0:
+            corners[tuple(rng.integers(0, (8, 2, 2)))] = np.nan
+        box, *boxes = [Bbox(c) for c in corners]
+        expected = box.count_overlaps(boxes)
+        assert count_overlaps(box, boxes) == expected
+        assert (
+            count_overlaps(corners[0].ravel(), corners[1:].reshape(-1, 4)) == expected
+        )
+    assert count_overlaps(Bbox.unit(), []) == Bbox.unit().count_overlaps([]) == 0
+
+
+def test_anchor_tick_labels():
+    # A 40 by 10 pixel label at a tick whose spine normal and direction are
+    # both 30 degrees from +x. The label moves away from the tick along the
+    # normal, which leaves the label box through its long side, until the
+    # box clears the tick by the pad. An empty label is left out.
+    labels = SimpleNamespace(
+        world={"a": [0, 0]},
+        data={"a": [(100.0, 50.0), (0.0, 0.0)]},
+        angle={"a": [30.0, 30.0]},
+        tick_angle={"a": [30.0, 30.0]},
+        text={"a": ["label", ""]},
+        disp={"a": [0, 1]},
+    )
+    xy = anchor_tick_labels(labels, ["a"], np.asarray, 5.0, lambda *_: (40.0, 10.0))
+    assert list(xy["a"]) == [0]
+    cos, sin = np.cos(np.radians(30)), np.sin(np.radians(30))
+    assert_allclose(
+        xy["a"][0],
+        (100 - 5 * cos / sin - 5 * cos, 50 - 5 - 5 * sin),
+        rtol=0,
+        atol=1e-12,
     )
 
 

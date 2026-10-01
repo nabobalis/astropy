@@ -12,6 +12,8 @@ from matplotlib.patches import PathPatch
 
 from astropy.utils.exceptions import AstropyDeprecationWarning
 
+from ._layout import resample_spine, spine_normal_angle
+
 __all__ = [
     "BaseFrame",
     "EllipticalFrame",
@@ -102,11 +104,7 @@ class Spine:
             self._update_normal()
 
     def _update_normal(self):
-        pixel = self._get_pixel()
-        # Find angle normal to border and inwards, in display coordinate
-        dx = pixel[1:, 0] - pixel[:-1, 0]
-        dy = pixel[1:, 1] - pixel[:-1, 1]
-        self.normal_angle = np.degrees(np.arctan2(dx, -dy))
+        self.normal_angle = spine_normal_angle(self._get_pixel())
 
     def _halfway_x_y_angle(self):
         """
@@ -237,14 +235,7 @@ class BaseFrame(OrderedDict, metaclass=abc.ABCMeta):
         for axis in self:
             data = self[axis].data
             spines[axis] = self.spine_class(self.parent_axes, self.transform)
-            if data.size > 0:
-                p = np.linspace(0.0, 1.0, data.shape[0])
-                p_new = np.linspace(0.0, 1.0, n_samples)
-                spines[axis].data = np.array(
-                    [np.interp(p_new, p, d) for d in data.T]
-                ).transpose()
-            else:
-                spines[axis].data = data
+            spines[axis].data = resample_spine(data, n_samples)
 
         return spines
 

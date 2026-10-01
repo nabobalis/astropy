@@ -1,15 +1,21 @@
 """
-Check that the branch moved the WCSAxes geometry into _layout unchanged.
+Check each piece of WCSAxes geometry that the branch moved into _layout.
 
     python check_move.py ASTROPY_CLONE [BASE [HEAD]]
 
 BASE defaults to c55a2b2067, the commit the branch starts from, and HEAD to
 wcsaxes-layout-core. For each piece of code that the branch moved into
 astropy/visualization/wcsaxes/_layout.py, the script takes the old code at
-BASE, applies the renames listed below (``self.coord_index`` to
-``spec.coord_index`` and so on), and compares it with the new function at HEAD.
-Docstrings, comments and line wrapping are ignored: both sides go through
+BASE, applies the renames and substitutions listed below (``self.coord_index``
+to ``spec.coord_index`` and so on), and compares it with the new function at
+HEAD. Docstrings, comments and line wrapping are ignored: both sides go through
 ``ast.unparse``. Comments are compared on their own.
+
+Three of the replacements are substitutions rather than renames: the new
+expression gives the old value only because of code outside the moved piece.
+SUBSTITUTIONS names that code, and the output marks them. This script does not
+check that code, and it says nothing about the lines left at the call sites;
+the figure hashes and the tick tables cover those.
 
 Most moved lines only rename an attribute of ``self``, so git's own move
 detection (``git diff --color-moved``) marks only part of the move. What this
@@ -44,7 +50,24 @@ LABELS = [
     for key in ("world", "data", "angle", "tick_angle", "text", "disp")
 ]
 
-# (old file, old function or line ranges at BASE, new function, renames)
+# Replacements below that are not renames, with what makes each one hold
+SUBSTITUTIONS = {
+    "self._ticks.get_display_minor_ticks()": (
+        "CoordinateHelper._layout_spec passes minor_locator=None when minor "
+        "ticks are not displayed, as test_layout_spec checks"
+    ),
+    "self._get_bb(axis, i, renderer)": (
+        "TickLabels.draw passes lambda axis, i: self._get_bb(axis, i, renderer) "
+        "as extent"
+    ),
+    "bb.count_overlaps(self._all_bboxes + self._existing_bboxes)": (
+        "count_overlaps is a numpy port of Bbox.count_overlaps, compared with "
+        "it by test_count_overlaps_matches_matplotlib, and kept holds the boxes "
+        "of _all_bboxes because TickLabels.draw empties _axis_bboxes first"
+    ),
+}
+
+# (old file, old function or line ranges at BASE, new function, replacements)
 PIECES = [
     ("coordinate_helpers.py", "wrap_angle_at", "wrap_angle_at", []),
     (
@@ -292,13 +315,17 @@ def main(clone, base="c55a2b2067", head="wcsaxes-layout-core"):
         print(
             f"== {label} ({start}-{end}) -> _layout.{new_name} ({new_start}-{new_end})"
         )
-        if renames:
+        plain = [(o, n) for o, n in renames if o not in SUBSTITUTIONS]
+        if plain:
             print(
-                "   renames: "
-                + "; ".join(f"{o.lstrip('/')} -> {n}" for o, n in renames)
+                "   renames: " + "; ".join(f"{o.lstrip('/')} -> {n}" for o, n in plain)
             )
+        for o, n in renames:
+            if o in SUBSTITUTIONS:
+                print(f"   substitution: {o} -> {n}, which holds because")
+                print(f"     {SUBSTITUTIONS[o]}")
         if not code_diff and not comment_diff:
-            print("   identical after the renames")
+            print("   identical after the replacements")
         for line in code_diff[2:]:
             print("   code    " + line)
         for line in comment_diff[2:]:
@@ -307,7 +334,7 @@ def main(clone, base="c55a2b2067", head="wcsaxes-layout-core"):
         print()
     print(
         f"Counting lines as ast.unparse writes them, {same} are the same after "
-        f"the renames. {old_only} old lines did not move or were replaced, and "
+        f"the replacements. {old_only} old lines did not move or were replaced, and "
         f"{new_only} new lines replace them."
     )
 

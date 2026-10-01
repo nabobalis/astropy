@@ -1,16 +1,24 @@
 # WCSAxes layout core demos
 
-These are standalone demos for the astropy branch `wcsaxes-layout-core`. That branch moves the tick, grid and label geometry of WCSAxes into `astropy/visualization/wcsaxes/_layout.py`, a private module that does not import matplotlib, and leaves every WCSAxes figure pixel-identical. Each demo here draws the same ticks with a different toolkit, and `check_move.py` checks that the branch moved the code unchanged. None of this is part of astropy.
+These are standalone demos for the astropy branch `wcsaxes-layout-core`. That branch moves the tick, grid and label geometry of WCSAxes into `astropy/visualization/wcsaxes/_layout.py`, a private module that does not import matplotlib, and leaves every WCSAxes figure pixel-identical. Each demo here draws the same ticks with a different toolkit, and `check_move.py` checks that each moved piece equals its source after the listed renames and substitutions; the figure hashes and tick tables cover the call sites. None of this is part of astropy.
 
 ## Checking the move: `check_move.py`
 
 Almost every moved line renames an attribute of `self`: `self.coord_index` becomes `spec.coord_index`, `transData.transform` becomes `to_display`, and so on. So `git diff --color-moved` marks only part of the move. `check_move.py` takes each moved function or block at the branch's base commit, applies those renames, and compares it with the new function in `_layout.py`. Docstrings, comments and line wrapping are ignored, and comments are compared on their own.
 
+Three replacements are substitutions rather than renames, because the new expression gives the old value only through code outside the moved piece. The script marks them and names that code, but does not check it:
+
+- `self._ticks.get_display_minor_ticks()` becomes `spec.minor_locator is not None`, which holds because `CoordinateHelper._layout_spec` passes no minor locator when minor ticks are not displayed, as `test_layout_spec` checks.
+- `self._get_bb(axis, i, renderer)` becomes `extent(axis, i)`, which `TickLabels.draw` passes as a lambda.
+- `bb.count_overlaps(self._all_bboxes + self._existing_bboxes)` becomes `count_overlaps(bb, kept + existing)`. `count_overlaps` is a numpy port of matplotlib's C routine, which `test_count_overlaps_matches_matplotlib` compares with it, and `kept` holds the boxes of `_all_bboxes` because `TickLabels.draw` empties `_axis_bboxes` before the loop.
+
+Nor does the script look at the lines left at the call sites. The figure hashes and the tick tables cover those.
+
 ```
 python check_move.py /path/to/astropy-wcsaxes-core
 ```
 
-For each of the 17 pieces it lists the renames and prints what differs beyond them. That is mostly lines that stayed in the matplotlib classes, such as `if self.coord_index is None: return` or the `Ticks.add` calls, and the few lines that change, such as the 1-D frame taking its number of samples from the sampled spine. On the branch, counting lines as `ast.unparse` writes them, 251 old lines are the same after the renames, 69 did not move or were replaced, and 25 new lines replace them.
+For each of the 17 pieces it lists the renames and substitutions and prints what differs beyond them. That is mostly lines that stayed in the matplotlib classes, such as `if self.coord_index is None: return` or the `Ticks.add` calls, and the few lines that change, such as the 1-D frame taking its number of samples from the sampled spine. On the branch, counting lines as `ast.unparse` writes them, 251 old lines are the same after the replacements, 69 did not move or were replaced, and 25 new lines replace them.
 
 ## Qt: `qt/`
 

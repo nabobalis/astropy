@@ -16,6 +16,9 @@ from astropy import units as u
 from astropy.utils.decorators import deprecated_renamed_argument
 from astropy.utils.exceptions import AstropyDeprecationWarning
 
+# wrap_angle_at moved to _layout and is used here too. The ticks use the name
+# in _layout, so replacing coordinate_helpers.wrap_angle_at no longer changes
+# them.
 from ._layout import CoordSpec, grid_lines, label_store, place_ticks, wrap_angle_at
 from .axislabels import AxisLabels
 from .formatter_locator import AngleFormatterLocator, ScalarFormatterLocator

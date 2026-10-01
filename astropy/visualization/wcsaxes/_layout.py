@@ -33,6 +33,7 @@ Conventions:
 
 from collections import defaultdict
 from collections.abc import Callable
+from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import NamedTuple
 
@@ -41,11 +42,11 @@ import numpy as np
 from astropy import units as u
 from astropy.coordinates import angular_separation
 
+# What a plotting toolkit calls. The other functions and constants are used
+# by the wcsaxes modules that the code moved from.
 __all__ = [
-    "DISCONT_FACTOR",
     "LINETO",
     "MOVETO",
-    "ROUND_TRIP_RTOL",
     "CoordSpec",
     "PlacedTicks",
     "SpineArrays",
@@ -53,20 +54,15 @@ __all__ = [
     "anchor_tick_labels",
     "axis_label_position",
     "count_overlaps",
-    "find_start_of_last_number",
     "grid_lines",
-    "gridline_path_codes",
     "keep_tick_labels",
     "label_store",
-    "lon_lat_path_codes",
     "place_ticks",
     "resample_spine",
     "simplify_labels",
     "sort_labels",
-    "sort_using",
     "spine_midpoint",
     "spine_normal_angle",
-    "wrap_angle_at",
 ]
 
 # The codes of the vertices of a grid line, equal to those of
@@ -185,7 +181,8 @@ class SpineArrays(NamedTuple):
     normal_angle: np.ndarray
 
 
-class CoordSpec(NamedTuple):
+@dataclass(frozen=True, kw_only=True)
+class CoordSpec:
     """
     What `place_ticks` needs to know about one coordinate.
 

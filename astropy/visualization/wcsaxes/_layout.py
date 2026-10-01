@@ -587,14 +587,15 @@ def grid_lines(spec, coord_ranges, n_samples, pixel_to_world, world_to_pixel):
         Converts an (N, 2) array of data pixels to an (N, 2) array of world
         values.
     world_to_pixel : callable
-        Converts an (N, 2) array of world values to data pixels.
+        Converts an (N, 2) array of world values to data pixels. It is called
+        once, and not at all if the locator finds no ticks.
 
     Returns
     -------
-    list of tuple or None
+    list of tuple
         One ``(pixel, codes)`` pair per tick value, where ``pixel`` is an
         (n_samples, 2) array of data pixels and ``codes`` holds the `MOVETO`
-        or `LINETO` code of each vertex. None if the locator finds no ticks.
+        or `LINETO` code of each vertex. Empty if the locator finds no ticks.
     """
     # For 3-d WCS with a correlated third axis, the *proper* way of
     # drawing a grid should be to find the world coordinates of all pixels
@@ -609,7 +610,7 @@ def grid_lines(spec, coord_ranges, n_samples, pixel_to_world, world_to_pixel):
 
     n_coord = len(tick_world_coordinates_values)
     if n_coord == 0:
-        return None
+        return []
 
     xy_world = np.zeros((n_samples * n_coord, 2))
 

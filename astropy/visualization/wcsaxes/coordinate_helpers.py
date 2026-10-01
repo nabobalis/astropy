@@ -1116,10 +1116,11 @@ class CoordinateHelper:
             self.parent_map._coord_range,
             conf.grid_samples,
             self.transform.transform,
-            self.transform.inverted().transform,
+            # As before, the inverse is only built when there are ticks.
+            lambda world: self.transform.inverted().transform(world),
         )
         # Without ticks there are no grid lines, and the previous ones stay.
-        if lines is not None:
+        if lines:
             self._grid_lines = [Path(pixel, codes=codes) for pixel, codes in lines]
 
     def add_tickable_gridline(self, name, constant):

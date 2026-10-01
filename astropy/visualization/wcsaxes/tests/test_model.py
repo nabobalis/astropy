@@ -8,7 +8,7 @@ import sys
 
 import numpy as np
 import pytest
-from numpy.testing import assert_array_equal
+from numpy.testing import assert_allclose, assert_array_equal
 
 from astropy import units as u
 from astropy.utils.exceptions import AstropyDeprecationWarning
@@ -17,6 +17,7 @@ from astropy.visualization.wcsaxes._model import (
     AxesModel,
     CoordinateModel,
     coord_meta_from_wcs,
+    default_positions,
     wcs_pixel_to_world,
     wcs_world_to_pixel,
 )
@@ -124,25 +125,24 @@ sys.modules["matplotlib"] = None
 import numpy as np
 
 from astropy import units as u
-from astropy.visualization.wcsaxes import _layout, custom_ucd_coord_meta_mapping
+from astropy.visualization.wcsaxes import custom_ucd_coord_meta_mapping
 from astropy.visualization.wcsaxes._model import AxesModel
-from astropy.visualization.wcsaxes.coordinate_range import find_coordinate_range
 from astropy.visualization.wcsaxes.tests.test_model import celestial
 
 model = AxesModel.from_wcs(celestial())
 assert model["ra"].get_format_unit() == u.hourangle
-p2w = model.pixel_to_world
-to_display = lambda xy: 2.0 * np.asarray(xy)
-spines = _layout.rectangular_spines((-0.5, 99.5), (-0.5, 79.5), 100, p2w, to_display)
-ranges = find_coordinate_range(
-    p2w, [-0.5, 99.5, -0.5, 79.5],
-    [c.coord_type for c in model], [c.coord_unit for c in model], [c.coord_wrap for c in model],
-)
 model["ra"].set_ticks(spacing=20 * u.arcsec)
-spec = model["ra"].spec()
-placed = _layout.place_ticks(spec, ranges[0], spines, p2w, to_display, lambda xy: xy / 2.0)
-assert "".join(placed.major.axis).startswith("b"), placed.major.axis
-assert placed.text[0].startswith("17$"), placed.text
+model["dec"].grid = True
+layout = model.layout(
+    (-0.5, 99.5), (-0.5, 79.5),
+    lambda xy: 2.0 * np.asarray(xy), lambda xy: np.asarray(xy) / 2.0,
+    measure=lambda text, x, y: (7.0 * len(text), 12.0), tick_size=5, pad=5, font_size=14,
+)
+ra, dec = layout.coords
+assert "".join(ra.ticks.major.axis).startswith("b"), ra.ticks.major.axis
+assert ra.ticks.text[0].startswith("17$"), ra.ticks.text
+assert ra.kept and dec.kept and dec.grid, (ra.kept, dec.kept, dec.grid)
+assert set(ra.axis_labels) | set(dec.axis_labels) == {"b", "l"}, (ra.axis_labels, dec.axis_labels)
 """
     proc = subprocess.run(
         [sys.executable, "-c", code], capture_output=True, text=True, check=False
@@ -277,3 +277,174 @@ def test_helper_delegates_to_model():
         ra.format_coord(266.4, format="ascii")
         == ra.formatter([266.4] * u.deg, spacing=ra._model.spacing, format="ascii")[0]
     )
+
+
+def test_default_positions():
+    def meta(types, visible):
+        return {"type": types, "visible": visible}
+
+    both = default_positions(
+        meta(["longitude", "latitude"], [True, True]), "rectangular", "brtl"
+    )
+    assert both["default_ticks_position"] == ["brtl", "brtl"]
+    assert (
+        both["default_ticklabel_position"]
+        == both["default_axislabel_position"]
+        == ["#", "#"]
+    )
+    # A sliced cube shows two of three coordinates, so ticks go on all spines
+    cube = default_positions(
+        meta(["longitude", "latitude", "scalar"], [True, True, False]),
+        "rectangular",
+        "brtl",
+    )
+    assert cube["default_ticks_position"] == ["brtl", "brtl", ""]
+    assert cube["default_ticklabel_position"] == ["#", "#", ""]
+    one = default_positions(meta(["scalar"], [True]), "rectangular1d", "bt")
+    assert one["default_ticks_position"] == ["bt"]
+    ell = default_positions(
+        meta(["longitude", "latitude"], [True, True]), "elliptical", "chv"
+    )
+    assert (
+        ell["default_ticks_position"] == ell["default_axislabel_position"] == ["h", "c"]
+    )
+    custom = default_positions(
+        meta(["longitude", "latitude"], [True, True]), "custom", "abcdef"
+    )
+    assert custom["default_ticklabel_position"] == ["abcdef", "abcdef"]
+
+
+def test_coordinate_model_positions():
+    lon = CoordinateModel(0, "longitude", u.deg, spine_names="brtl")
+    assert lon.get_ticks_position() == ["b", "r", "t", "l"]
+    lon.set_ticklabel_position("b#")
+    assert lon.get_ticklabel_position() == ["b", "#"]
+    with pytest.warns(AstropyDeprecationWarning, match="Ignoring unrecognized"):
+        lon.set_axislabel_position(["b", "x"])
+    assert lon.get_axislabel_position() == ["b"]
+    assert lon.tick_count("b") == 0
+    assert lon.get_axislabel() == ""
+    lon.axislabel = "RA"
+    assert lon.get_axislabel() == "RA"
+    lon.axislabel_minpad = {"b": 2}
+    assert lon._minpad("b") == 2
+
+
+def test_axes_model_from_wcs_positions():
+    model = AxesModel.from_wcs(celestial())
+    assert model.frame == "rectangular"
+    assert model["ra"].get_ticks_position() == ["b", "r", "t", "l"]
+    assert model["ra"].get_ticklabel_position() == ["#"]
+    one_d = WCS(naxis=1)
+    one_d.wcs.ctype = ["FREQ"]
+    model = AxesModel.from_wcs(one_d)
+    assert model.frame == "rectangular1d"
+    assert model[0].get_ticks_position() == ["b", "t"]
+
+
+def layout_of_axes(ax, model, **kwargs):
+    """The model's layout of the view of a WCSAxes, in its display pixels."""
+    return model.layout(
+        ax.get_xlim(),
+        ax.get_ylim(),
+        ax.transData.transform,
+        ax.transData.inverted().transform,
+        **kwargs,
+    )
+
+
+@pytest.mark.parametrize("slices", [None, ("x", "y", 0), ("y", "x", 0), ("x", 0, 0)])
+def test_layout_matches_wcsaxes(ignore_matplotlibrc, slices):
+    # Without measuring text, layout() places the ticks WCSAxes places, and
+    # assigns the same spines automatically
+    from matplotlib.figure import Figure
+
+    wcs = celestial() if slices is None else cube()
+    fig = Figure(figsize=(6, 4), dpi=100)
+    ax = fig.add_subplot(projection=wcs, slices=slices)
+    ax.set_xlim(-0.5, 99.5)
+    ax.set_ylim(-0.5, 79.5)
+    ax.coords[0].display_minor_ticks(True)
+    model = AxesModel.from_wcs(wcs, slices=slices)
+    model[0].display_minor_ticks = True
+
+    layout = layout_of_axes(ax, model)
+    shown = [coord for coord in ax.coords if coord.coord_index is not None]
+    assert [c.coord.coord_index for c in layout.coords] == [
+        c.coord_index for c in shown
+    ]
+    for helper, lay in zip(shown, layout.coords):
+        ticks = helper.get_ticks()
+        for spine in ticks:
+            on_spine = np.array(lay.ticks.major.axis) == spine
+            assert_array_equal(lay.ticks.major.pixel[on_spine], ticks[spine])
+        minor = helper.get_ticks(minor=True)
+        assert sum(len(v) for v in minor.values()) == len(lay.ticks.minor.axis)
+        assert helper.get_ticklabels() == {
+            spine: [
+                t for t, a in zip(lay.ticks.text, lay.ticks.major.axis) if a == spine
+            ]
+            for spine in ticks
+        }
+        # The spines assigned automatically agree
+        assert helper.get_ticklabel_position() == lay.coord.get_ticklabel_position()
+        assert helper.get_axislabel_position() == lay.coord.get_axislabel_position()
+        assert lay.anchors is None and lay.kept is None and lay.axis_labels == {}
+        assert lay.axis_label_text == helper.get_axislabel()
+        assert lay.coord.format_coord(1.0, format="ascii") == helper.format_coord(
+            1.0, format="ascii"
+        )
+
+
+def test_layout_with_text(ignore_matplotlibrc):
+    # Text of 7 by 12 pixels: labels are anchored, overlaps dropped, and the
+    # axis labels placed beyond the tick labels on the spines assigned
+    from matplotlib.figure import Figure
+
+    fig = Figure(figsize=(6, 4), dpi=100)
+    ax = fig.add_subplot(projection=celestial())
+    ax.set_xlim(-0.5, 99.5)
+    ax.set_ylim(-0.5, 79.5)
+    model = AxesModel.from_wcs(celestial())
+    model["ra"].axislabel = "Right ascension"
+    model["ra"].grid = True
+    model["dec"].exclude_overlapping = True
+
+    def measure(text, x, y):
+        return 7.0 * len(text), 12.0
+
+    layout = layout_of_axes(
+        ax, model, measure=measure, tick_size=5, pad=5, font_size=14
+    )
+    ra, dec = layout.coords
+    assert ra.axis_label_text == "Right ascension"
+    assert dec.axis_label_text == "pos.eq.dec"
+    # One spine each, assigned automatically: RA runs along x here
+    (ra_spine,) = [a for a in ra.coord.get_ticklabel_position() if a != "#"]
+    (dec_spine,) = [a for a in dec.coord.get_ticklabel_position() if a != "#"]
+    assert {ra_spine, dec_spine} == {"b", "l"}
+    assert list(ra.anchors) == [ra_spine] and list(dec.anchors) == [dec_spine]
+    # Every label kept has a box 12 pixels high centred on its anchor
+    for lay, spine in [(ra, ra_spine), (dec, dec_spine)]:
+        assert len(lay.kept) > 1
+        for axis, i, (x0, y0, x1, y1) in lay.kept:
+            assert axis == spine
+            assert_allclose(
+                (y1 - y0, (x0 + x1) / 2, (y0 + y1) / 2), (12, *lay.anchors[axis][i])
+            )
+    # The RA labels are 10 pixels below the bottom spine, 5 of tick and 5 of pad
+    bottom = ax.transData.transform([[0, -0.5]])[0, 1]
+    assert_allclose([y for _, y in ra.anchors["b"].values()], bottom - 10 - 6)
+    # Axis labels on the assigned spines only, pushed out past the labels
+    assert list(ra.axis_labels) == [ra_spine] and list(dec.axis_labels) == [dec_spine]
+    x, y, rotation = ra.axis_labels["b"]
+    assert rotation % 360 == 0 and y < bottom - 10 - 12
+    assert ra.grid and not dec.grid
+    # With the 'ticks' rule and no ticks on a spine, no axis label there
+    model["ra"].axislabel_visibility_rule = "ticks"
+    model["ra"].set_ticks_position("t")
+    model["ra"].set_axislabel_position("b")
+    layout = layout_of_axes(
+        ax, model, measure=measure, tick_size=5, pad=5, font_size=14
+    )
+    assert layout.coords[0].axis_labels == {}

@@ -7,6 +7,7 @@ from ._model import AxesModel
 from .coordinate_helpers import CoordinateHelper
 from .coordinate_range import find_coordinate_range
 from .frame import RectangularFrame, RectangularFrame1D
+from .wcsapi import _frame_kind
 
 
 class CoordinatesMap:
@@ -59,7 +60,12 @@ class CoordinatesMap:
 
         # Set up coordinates. The model holds what each coordinate is and
         # how its ticks are chosen; the helpers hold the matplotlib artists.
-        self._model = AxesModel.from_coord_meta(coord_meta, self._transform.transform)
+        self._model = AxesModel.from_coord_meta(
+            coord_meta,
+            self._transform.transform,
+            frame=_frame_kind(frame_class),
+            spine_names=frame_class.spine_names,
+        )
         self._coords = [
             CoordinateHelper(
                 parent_axes=axes,

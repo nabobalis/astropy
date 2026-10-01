@@ -10,6 +10,7 @@ from ._model import (
     apply_slices,  # noqa: F401 (moved to _model, re-exported)
     coord_meta_from_wcs,
     custom_ucd_coord_meta_mapping,
+    default_positions,
     wcs_pixel_to_world,
     wcs_world_to_pixel,
 )
@@ -60,54 +61,23 @@ def transform_coord_meta_from_wcs(wcs, frame_class, slices=None):
     return transform, coord_meta
 
 
+def _frame_kind(frame_class):
+    """
+    The name of a frame class for the model, or 'custom'.
+    """
+    kinds = {
+        RectangularFrame: "rectangular",
+        RectangularFrame1D: "rectangular1d",
+        EllipticalFrame: "elliptical",
+    }
+    return kinds.get(frame_class, "custom")
+
+
 def _add_default_positions(coord_meta, frame_class):
     """
     Add the default tick, tick label and axis label positions to coord_meta.
     """
-    world_map = [i for i, visible in enumerate(coord_meta["visible"]) if visible]
-    n_world = len(coord_meta["type"])
-    coord_meta["default_axislabel_position"] = [""] * n_world
-    coord_meta["default_ticklabel_position"] = [""] * n_world
-    coord_meta["default_ticks_position"] = [""] * n_world
-
-    if frame_class in (RectangularFrame, RectangularFrame1D):
-        for index in world_map:
-            coord_meta["default_axislabel_position"][index] = "#"
-            coord_meta["default_ticklabel_position"][index] = "#"
-            coord_meta["default_ticks_position"][index] = "#"
-
-        # In the special and common case where the frame is rectangular and we
-        # are dealing with a 2-d WCS (after slicing) for RectangularFrame or a
-        # 1-d WCS for RectangularFrame1D, we show all ticks on all axes.
-        if (frame_class is RectangularFrame and len(world_map) == 2) or (
-            frame_class is RectangularFrame1D and len(world_map) == 1
-        ):
-            for index in world_map:
-                coord_meta["default_ticks_position"][index] = frame_class.spine_names
-
-    elif frame_class is EllipticalFrame:
-        if "longitude" in coord_meta["type"]:
-            lon_idx = coord_meta["type"].index("longitude")
-            coord_meta["default_axislabel_position"][lon_idx] = "h"
-            coord_meta["default_ticklabel_position"][lon_idx] = "h"
-            coord_meta["default_ticks_position"][lon_idx] = "h"
-
-        if "latitude" in coord_meta["type"]:
-            lat_idx = coord_meta["type"].index("latitude")
-            coord_meta["default_axislabel_position"][lat_idx] = "c"
-            coord_meta["default_ticklabel_position"][lat_idx] = "c"
-            coord_meta["default_ticks_position"][lat_idx] = "c"
-
-    else:
-        for index in range(len(coord_meta["type"])):
-            if index in world_map:
-                coord_meta["default_axislabel_position"][index] = (
-                    frame_class.spine_names
-                )
-                coord_meta["default_ticklabel_position"][index] = (
-                    frame_class.spine_names
-                )
-                coord_meta["default_ticks_position"][index] = frame_class.spine_names
+    default_positions(coord_meta, _frame_kind(frame_class), frame_class.spine_names)
 
 
 def wcsapi_to_celestial_frame(wcs):

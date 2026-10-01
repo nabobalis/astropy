@@ -576,7 +576,9 @@ class WCSAxes(Axes):
 
         # At this point, if any of the tick/ticklabel/axislabel positions are
         # set to be automatic, we need to determine the optimal positions.
-        auto_assign_coord_positions(self)
+        auto_assign_coord_positions(
+            self._all_coords, self.coords.frame._spine_auto_position_order
+        )
 
         if not keep_coord_range:
             for coords in self._all_coords:

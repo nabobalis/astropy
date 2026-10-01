@@ -591,6 +591,12 @@ class CoordinateHelper:
             for axis in self.frame
         }
 
+    def tick_count(self, spine):
+        """
+        The number of major ticks placed on a spine by the last tick update.
+        """
+        return len(self._ticks.world.get(spine, []))
+
     def get_ticklabels(self):
         """
         Get the labels of the major ticks of this coordinate.

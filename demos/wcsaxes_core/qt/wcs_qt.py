@@ -192,7 +192,7 @@ def layout(case, box, xlim, ylim, measure):
         )
 
         # Tick labels, stored as TickLabels stores them
-        labels = _layout.tick_labels(placed)
+        labels = _layout.label_store(placed)
         _layout.sort_labels(labels)
         _layout.simplify_labels(labels, NUMERICAL_CHARS)
         anchors = _layout.anchor_tick_labels(
@@ -269,7 +269,7 @@ def draw(painter, case, box, xlim, ylim):
 
     painter.setPen(QPen(QColor(255, 255, 255, 153), LINE_WIDTH))
     for r in result:
-        for pixel, codes in r.grid or []:
+        for pixel, codes in r.grid:
             starts = np.flatnonzero(codes == _layout.MOVETO)[1:]
             for part in np.split(to_display(pixel), starts):
                 # A NaN vertex is a MOVETO of its own, so parts are clean

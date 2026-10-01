@@ -169,15 +169,22 @@ def layout(case, xlim, ylim):
     for index, (c, unit) in enumerate(zip(case.coords, units)):
         fl = AngleFormatterLocator(unit=unit, format_unit=c.format_unit)
         spec = _layout.CoordSpec(
-            index, c.type, unit, c.wrap, None if unit is u.deg else unit.to(u.deg),
-            fl.locator, fl.formatter, None, 5,
+            coord_index=index,
+            coord_type=c.type,
+            coord_unit=unit,
+            coord_wrap=c.wrap,
+            coord_scale_to_deg=None if unit is u.deg else unit.to(u.deg),
+            locator=fl.locator,
+            formatter=fl.formatter,
+            minor_locator=None,
+            minor_frequency=5,
         )
         placed = _layout.place_ticks(
             spec, ranges[index], spines, p2w.transform, view.to_display, view.from_display
         )
 
         # Tick labels, stored as TickLabels.add stores them
-        labels = _layout.tick_labels(placed)
+        labels = _layout.label_store(placed)
         _layout.sort_labels(labels)
         _layout.simplify_labels(labels, NUMERICAL_CHARS)
         xy = _layout.anchor_tick_labels(
@@ -197,7 +204,7 @@ def layout(case, xlim, ylim):
             spec, ranges, conf.grid_samples, p2w.transform, p2w.inverted().transform
         )
         coords.append(SimpleNamespace(
-            placed=placed, labels=labels, xy=xy, kept=kept, grid=grid or [], axis_label=None
+            placed=placed, labels=labels, xy=xy, kept=kept, grid=grid, axis_label=None
         ))
 
     # Axis labels go past the union of all the tick labels, and a coordinate

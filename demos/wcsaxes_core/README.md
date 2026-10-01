@@ -73,7 +73,7 @@ The demo works out no geometry itself beyond a rectangle and an affine display t
 
 - **`place_ticks`:** where each coordinate's ticks cross each spine, which way they point, and the formatter's labels. That includes longitude wrapping, rolled frames, and spines that leave the sky (pan the CAR case past a pole).
 - **`grid_lines`:** sampled grid lines, with path codes that break a line where it jumps or has no pixel position. The demo splits each line at those codes and draws polylines.
-- **`tick_labels`, `sort_labels` and `simplify_labels`:** the labels held as `TickLabels` holds them, and the label shortening that WCSAxes does (`−28°50'`, `52'`, `54'` and so on).
+- **`label_store`, `sort_labels` and `simplify_labels`:** the labels held as `TickLabels` holds them, and the label shortening that WCSAxes does (`−28°50'`, `52'`, `54'` and so on).
 - **`anchor_tick_labels` and `keep_tick_labels`:** label centres, worked out from a `measure(text)` callback, and which labels to draw.
 - **`spine_midpoint` and `axis_label_position`:** where each axis label goes and how it is rotated.
 
@@ -95,7 +95,11 @@ The demo never creates a Figure, an Axes, a transform or a renderer. At exit it 
   - take the union of all those boxes for the axis labels;
   - apply the 'labels' visibility rule.
 
-  `_layout.tick_labels(placed)` fills the store shaped like `TickLabels`, where `angle` is the spine normal and `tick_angle` is the tick direction. An axis-label step that takes all the kept boxes would cover most of the rest.
+  `_layout.label_store(placed)` fills the store shaped like `TickLabels`, where `angle` is the spine normal and `tick_angle` is the tick direction, and WCSAxes fills `TickLabels` from it too. An axis-label step that takes all the kept boxes would cover most of the rest.
+- **The tick-label functions work on `TickLabels`' own storage.** Unlike the tick, grid and axis-label functions, which take and return arrays, `sort_labels`, `simplify_labels`, `anchor_tick_labels` and `keep_tick_labels` are `TickLabels`' methods with `self` taken out.
+  - They read six parallel dicts of lists, keyed by spine, and the first two change them in place.
+  - `keep_tick_labels` measures each label through a callback and yields it, so that matplotlib draws a label as soon as it is kept, in the same order as before.
+  - That is what keeps WCSAxes' figures identical, but it is not the interface a second toolkit would choose. A table of labels with array columns, functions that return new tables, and an overlap step that takes the boxes and returns the indices to keep would be cleaner. That would be a redesign, not a move, so it is left for discussion.
 - **Text measurement has a convention.** To match matplotlib, `measure` must return the advance width, and a height of one em unless the ink is taller.
   - matplotlib 3.11 sizes a line of text from the font's typographic ascender and descender, which add up to one em in DejaVu Sans. Qt 5 does not expose them.
   - With Qt's own line height (ascent plus descent: 16.3 px against 13.9 px), the labels moved by up to 2.4 px.
@@ -182,11 +186,11 @@ An exact answer needs a round trip through the front end: measure there, send th
 
 ### What the core gave it
 
-It uses the same functions as the Qt demo: `place_ticks`, `grid_lines`, `tick_labels`, `sort_labels`, `simplify_labels`, `anchor_tick_labels`, `keep_tick_labels`, `spine_midpoint` and `axis_label_position`, plus `find_coordinate_range`. The demo's own geometry is a rectangle and an affine transform. The path codes from `grid_lines` map directly onto bqplot: a NaN row before each `MOVETO` breaks a `Lines` mark at that point.
+It uses the same functions as the Qt demo: `place_ticks`, `grid_lines`, `label_store`, `sort_labels`, `simplify_labels`, `anchor_tick_labels`, `keep_tick_labels`, `spine_midpoint` and `axis_label_position`, plus `find_coordinate_range`. The demo's own geometry is a rectangle and an affine transform. The path codes from `grid_lines` map directly onto bqplot: a NaN row before each `MOVETO` breaks a `Lines` mark at that point.
 
 ### What was still awkward
 
-The points listed for Qt apply here too: mathtext labels, matplotlib still being imported, coordinate metadata written by hand, orchestration around the core, and spine choice. The orchestration is about 21 of the 69 lines of `layout()`. Specific to bqplot:
+The points listed for Qt apply here too: mathtext labels, matplotlib still being imported, coordinate metadata written by hand, orchestration around the core, and spine choice. The orchestration is about 21 of the 76 lines of `layout()`. Specific to bqplot:
 
 - **Text cannot be measured where it is drawn.** See the section above.
 - **Mathtext.** bqplot's `Label` mark draws plain SVG text, so `$\mathregular{^h}$` has to become `ʰ` before it is measured and drawn, as in Qt.

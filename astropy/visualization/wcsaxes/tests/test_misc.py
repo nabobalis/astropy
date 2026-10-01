@@ -962,6 +962,9 @@ sys.modules["matplotlib"] = None
 from astropy.visualization import wcsaxes
 from astropy.visualization.wcsaxes import _layout, conf
 
+# Walking astropy's packages, as generate_config does, imports this one too.
+import astropy.visualization.wcsaxes.tests
+
 for name in {names!r}:
     try:
         getattr(wcsaxes, name)

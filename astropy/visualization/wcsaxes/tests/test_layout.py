@@ -23,7 +23,6 @@ from astropy.visualization.wcsaxes._layout import (
     LINETO,
     MOVETO,
     CoordSpec,
-    SpineArrays,
     anchor_tick_labels,
     axis_label_position,
     count_overlaps,
@@ -33,6 +32,7 @@ from astropy.visualization.wcsaxes._layout import (
     label_store,
     lon_lat_path_codes,
     place_ticks,
+    rectangular_spines,
     resample_spine,
     simplify_labels,
     sort_labels,
@@ -102,18 +102,7 @@ def layout(ctype, crval, cdelt, shape, spacing, rectangular):
     wcs.wcs.crpix = [(shape[0] + 1) / 2, (shape[1] + 1) / 2]
     p2w = PixelToWorld(wcs)
     x0, x1, y0, y1 = -0.5, shape[0] - 0.5, -0.5, shape[1] - 0.5
-    outlines = {
-        "b": [[x0, y0], [x1, y0]],
-        "r": [[x1, y0], [x1, y1]],
-        "t": [[x1, y1], [x0, y1]],
-        "l": [[x0, y1], [x0, y0]],
-    }
-    spines = {}
-    for name, outline in outlines.items():
-        data = resample_spine(np.array(outline), 100)
-        with np.errstate(invalid="ignore"):
-            world = p2w.transform(data)
-        spines[name] = SpineArrays(data, world, spine_normal_angle(to_display(data)))
+    spines = rectangular_spines((x0, x1), (y0, y1), 100, p2w.transform, to_display)
     types = ["longitude", "latitude"]
     wraps = [360 * u.deg, None]
     ranges = find_coordinate_range(p2w, [x0, x1, y0, y1], types, [u.deg] * 2, wraps)
@@ -155,8 +144,8 @@ def layout(ctype, crval, cdelt, shape, spacing, rectangular):
         union = (*boxes[:, :2].min(axis=0), *boxes[:, 2:].max(axis=0))
         axis_label = {}
         for axis in labels.text:
-            # As Spine._halfway_x_y_angle, on the outline before resampling
-            pixel = to_display(np.array(outlines[axis]))
+            # As Spine._halfway_x_y_angle, on the two corners of the spine
+            pixel = to_display(spines[axis].data[[0, -1]])
             x, y, normal = spine_midpoint(pixel, spine_normal_angle(pixel))
             axis_label[axis] = axis_label_position(
                 axis, x, y, normal, 12.0, 10.0, rectangular, union
@@ -294,6 +283,32 @@ def test_layout_spec():
     spec = dec._layout_spec()
     assert (spec.coord_index, spec.coord_type, spec.coord_wrap) == (1, "latitude", None)
     assert spec.minor_locator is None
+
+
+def test_rectangular_spines():
+    # The same spines as RectangularFrame.sample gives WCSAxes
+    from matplotlib.figure import Figure
+
+    wcs = WCS(naxis=2)
+    wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    wcs.wcs.cdelt = [-0.01, 0.01]
+    ax = Figure().add_subplot(projection=wcs)
+    ax.set_xlim(-0.5, 99.5)
+    ax.set_ylim(-0.5, 49.5)
+    frame = ax.coords.frame
+    expected = frame.sample(20)
+    spines = rectangular_spines(
+        ax.get_xlim(),
+        ax.get_ylim(),
+        20,
+        frame.transform.transform,
+        ax.transData.transform,
+    )
+    assert list(spines) == list(expected) == ["b", "r", "t", "l"]
+    for axis in spines:
+        assert_array_equal(spines[axis].data, expected[axis].data)
+        assert_array_equal(spines[axis].world, expected[axis].world)
+        assert_array_equal(spines[axis].normal_angle, expected[axis].normal_angle)
 
 
 def test_resample_spine():

@@ -58,6 +58,7 @@ __all__ = [
     "keep_tick_labels",
     "label_store",
     "place_ticks",
+    "rectangular_spines",
     "resample_spine",
     "simplify_labels",
     "sort_labels",
@@ -179,6 +180,48 @@ class SpineArrays(NamedTuple):
     data: np.ndarray
     world: np.ndarray
     normal_angle: np.ndarray
+
+
+def rectangular_spines(xlim, ylim, n_samples, pixel_to_world, to_display):
+    """
+    Sample the four spines of a rectangular frame.
+
+    The spines are those of
+    `~astropy.visualization.wcsaxes.frame.RectangularFrame`: ``'b'``,
+    ``'r'``, ``'t'`` and ``'l'``, each running in the same direction as
+    there, so that their normals point into the frame.
+
+    Parameters
+    ----------
+    xlim, ylim : tuple
+        The ``(min, max)`` limits of the frame in data pixels.
+    n_samples : int
+        The number of sample points along each spine.
+    pixel_to_world : callable
+        Converts an (N, 2) array of data pixels to an (N, n_world) array of
+        world values.
+    to_display : callable
+        Converts an (N, 2) array of data pixels to display pixels.
+
+    Returns
+    -------
+    dict
+        Maps each spine name to a `SpineArrays`, as `place_ticks` reads them.
+    """
+    (x0, x1), (y0, y1) = xlim, ylim
+    outlines = {
+        "b": [[x0, y0], [x1, y0]],
+        "r": [[x1, y0], [x1, y1]],
+        "t": [[x1, y1], [x0, y1]],
+        "l": [[x0, y1], [x0, y0]],
+    }
+    spines = {}
+    for axis, outline in outlines.items():
+        data = resample_spine(np.array(outline, dtype=float), n_samples)
+        with np.errstate(invalid="ignore"):
+            world = pixel_to_world(data)
+        spines[axis] = SpineArrays(data, world, spine_normal_angle(to_display(data)))
+    return spines
 
 
 @dataclass(frozen=True, kw_only=True)

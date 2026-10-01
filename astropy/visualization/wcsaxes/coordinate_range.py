@@ -26,10 +26,10 @@ def find_coordinate_range(transform, extent, coord_types, coord_units, coord_wra
 
     Parameters
     ----------
-    transform : func
-        Function to transform pixel to world coordinates. Should take two
-        values (the pixel coordinates) and return two values (the world
-        coordinates).
+    transform : callable or object
+        Converts an (N, 2) array of pixel coordinates to an (N, M) array of
+        world coordinates. Either a callable, or an object with a
+        ``transform`` method such as a matplotlib transform.
     extent : iterable
         The range of the image viewport in pixel coordinates, given as [xmin,
         xmax, ymin, ymax].
@@ -41,6 +41,8 @@ def find_coordinate_range(transform, extent, coord_types, coord_units, coord_wra
     coord_wraps : list of `astropy.units.Quantity`
         The wrap angles for longitudes.
     """
+    pixel_to_world = getattr(transform, "transform", transform)
+
     # Sample coordinates on a NX x NY grid.
     from . import conf
 
@@ -50,12 +52,12 @@ def find_coordinate_range(transform, extent, coord_types, coord_units, coord_wra
         y = np.linspace(extent[2], extent[3], ny + 1)
         xp, yp = np.meshgrid(x, y)
         with np.errstate(invalid="ignore"):
-            world = transform.transform(np.vstack([xp.ravel(), yp.ravel()]).transpose())
+            world = pixel_to_world(np.vstack([xp.ravel(), yp.ravel()]).transpose())
     else:
         nx = conf.coordinate_range_samples
         xp = np.linspace(extent[0], extent[1], nx + 1)[None]
         with np.errstate(invalid="ignore"):
-            world = transform.transform(xp.T)
+            world = pixel_to_world(xp.T)
 
     ranges = []
 

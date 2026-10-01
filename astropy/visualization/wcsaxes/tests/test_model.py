@@ -11,10 +11,18 @@ import pytest
 from numpy.testing import assert_array_equal
 
 from astropy import units as u
+from astropy.utils.exceptions import AstropyDeprecationWarning
+from astropy.visualization.wcsaxes._layout import CoordSpec
 from astropy.visualization.wcsaxes._model import (
+    AxesModel,
+    CoordinateModel,
     coord_meta_from_wcs,
     wcs_pixel_to_world,
     wcs_world_to_pixel,
+)
+from astropy.visualization.wcsaxes.formatter_locator import (
+    AngleFormatterLocator,
+    ScalarFormatterLocator,
 )
 from astropy.wcs import WCS
 
@@ -113,32 +121,25 @@ import sys
 
 sys.modules["matplotlib"] = None
 
-from functools import partial
-
 import numpy as np
 
 from astropy import units as u
 from astropy.visualization.wcsaxes import _layout, custom_ucd_coord_meta_mapping
-from astropy.visualization.wcsaxes._model import coord_meta_from_wcs, wcs_pixel_to_world
+from astropy.visualization.wcsaxes._model import AxesModel
 from astropy.visualization.wcsaxes.coordinate_range import find_coordinate_range
-from astropy.visualization.wcsaxes.formatter_locator import AngleFormatterLocator
 from astropy.visualization.wcsaxes.tests.test_model import celestial
 
-wcs = celestial()
-coord_meta, transform_wcs, invert_xy = coord_meta_from_wcs(wcs)
-assert coord_meta["format_unit"] == [u.hourangle, u.deg], coord_meta
-p2w = partial(wcs_pixel_to_world, transform_wcs, invert_xy=invert_xy)
+model = AxesModel.from_wcs(celestial())
+assert model["ra"].get_format_unit() == u.hourangle
+p2w = model.pixel_to_world
 to_display = lambda xy: 2.0 * np.asarray(xy)
 spines = _layout.rectangular_spines((-0.5, 99.5), (-0.5, 79.5), 100, p2w, to_display)
 ranges = find_coordinate_range(
-    p2w, [-0.5, 99.5, -0.5, 79.5], coord_meta["type"], coord_meta["unit"], coord_meta["wrap"]
+    p2w, [-0.5, 99.5, -0.5, 79.5],
+    [c.coord_type for c in model], [c.coord_unit for c in model], [c.coord_wrap for c in model],
 )
-fl = AngleFormatterLocator(unit=u.deg, format_unit=u.hourangle, spacing=20 * u.arcsec)
-spec = _layout.CoordSpec(
-    coord_index=0, coord_type="longitude", coord_unit=u.deg, coord_wrap=360 * u.deg,
-    coord_scale_to_deg=None, locator=fl.locator, formatter=fl.formatter,
-    minor_locator=None, minor_frequency=5,
-)
+model["ra"].set_ticks(spacing=20 * u.arcsec)
+spec = model["ra"].spec()
 placed = _layout.place_ticks(spec, ranges[0], spines, p2w, to_display, lambda xy: xy / 2.0)
 assert "".join(placed.major.axis).startswith("b"), placed.major.axis
 assert placed.text[0].startswith("17$"), placed.text
@@ -147,3 +148,132 @@ assert placed.text[0].startswith("17$"), placed.text
         [sys.executable, "-c", code], capture_output=True, text=True, check=False
     )
     assert proc.returncode == 0, proc.stderr
+
+
+def test_coordinate_model_coord_type():
+    lon = CoordinateModel(0, "longitude", u.deg)
+    assert lon.coord_wrap == 360 * u.deg
+    assert lon.coord_scale_to_deg is None
+    assert isinstance(lon.formatter_locator, AngleFormatterLocator)
+    assert lon.get_format_unit() == u.deg
+
+    # An angle in another unit is scaled to degrees for wrapping
+    lat = CoordinateModel(1, "latitude", u.arcsec, format_unit=u.arcsec)
+    assert lat.coord_wrap is None
+    assert lat.coord_scale_to_deg == 1 / 3600
+    with pytest.raises(NotImplementedError, match="coord_wrap is not yet supported"):
+        CoordinateModel(1, "latitude", u.deg, coord_wrap=180 * u.deg)
+
+    with pytest.warns(AstropyDeprecationWarning, match="as a number is deprecated"):
+        wrapped = CoordinateModel(0, "longitude", u.deg, coord_wrap=180)
+    assert wrapped.coord_wrap == 180 * u.deg
+
+    scalar = CoordinateModel(0, "scalar", u.m)
+    assert isinstance(scalar.formatter_locator, ScalarFormatterLocator)
+    assert scalar.default_axislabel() == " [$\\mathrm{m}$]"
+    assert scalar.default_axislabel("unicode") == " [m]"
+    assert lon.default_axislabel() == ""
+
+    with pytest.raises(ValueError, match="coord_type should be one of"):
+        CoordinateModel(0, "spam", u.deg)
+
+
+def test_coordinate_model_ticks_and_format():
+    lon = CoordinateModel(0, "longitude", u.deg, default_label="Longitude")
+    with pytest.raises(ValueError, match="At most one of"):
+        lon.set_ticks(spacing=1 * u.deg, number=5)
+    lon.set_ticks(spacing=30 * u.arcmin)
+    assert lon.formatter_locator.spacing == 30 * u.arcmin
+    assert lon.spec() == CoordSpec(
+        coord_index=0,
+        coord_type="longitude",
+        coord_unit=u.deg,
+        coord_wrap=360 * u.deg,
+        coord_scale_to_deg=None,
+        locator=lon.locator,
+        formatter=lon.formatter,
+        minor_locator=None,
+        minor_frequency=5,
+    )
+    lon.display_minor_ticks = True
+    assert lon.spec().minor_locator == lon.formatter_locator.minor_locator
+
+    # Nothing has been laid out yet, so no spacing and no readout
+    assert lon.format_coord(10.25) == ""
+    lon.spacing = 30 * u.arcmin
+    expected = lon.formatter([10.25] * u.deg, spacing=lon.spacing, format="ascii")[0]
+    assert lon.format_coord(10.25, format="ascii") == expected
+    # A longitude wraps, and a custom formatter is used as it is
+    assert lon.format_coord(370.25, format="ascii") == expected
+    lon.set_major_formatter(
+        lambda values, spacing=None, format=None: ["x"] * len(values)
+    )
+    assert lon.format_coord(10.25) == "x"
+    with pytest.raises(TypeError, match="formatter should be a string"):
+        lon.set_major_formatter(3)
+
+    lat = CoordinateModel(1, "scalar", u.m)
+    with pytest.raises(TypeError, match="only be specified for angle"):
+        lat.set_separator(":")
+
+
+def test_axes_model_from_wcs():
+    model = AxesModel.from_wcs(celestial())
+    assert len(model) == 2
+    assert [c.coord_index for c in model] == [0, 1]
+    assert model["ra"] is model[0] is model["pos.eq.ra"]
+    assert model["DEC"] is model[1]
+    assert "ra" in model and 1 in model and 2 not in model
+    assert model[0].coord_type == "longitude"
+    assert model[0].coord_wrap == 360 * u.deg
+    assert model[0].get_format_unit() == u.hourangle
+    assert model[1].default_label == "pos.eq.dec"
+    pixel = np.array([[49.5, 39.5]])
+    assert np.allclose(model.pixel_to_world(pixel), [[266.4, -28.9]])
+    assert np.allclose(model.world_to_pixel(model.pixel_to_world(pixel)), pixel)
+
+    # A sliced cube: the third coordinate is not shown, and x and y swap
+    sliced = AxesModel.from_wcs(cube(), slices=("y", "x", 0))
+    assert [c.coord_index for c in sliced] == [0, 1, None]
+    assert sliced["freq"].coord_type == "scalar"
+    assert np.allclose(
+        sliced.pixel_to_world(np.array([[39.5, 49.5]])), [[266.4, -28.9]]
+    )
+
+
+def test_helper_delegates_to_model():
+    # CoordinateHelper and CoordinatesMap keep their settings in the model
+    from matplotlib.figure import Figure
+
+    ax = Figure().add_subplot(projection=celestial())
+    ra, dec = ax.coords
+    assert ra._model is ax.coords._model[0]
+    assert ax.coords["ra"] is ra
+    assert ra.coord_type == "longitude" and ra.coord_wrap == 360 * u.deg
+    assert ra._layout_spec() == ra._model.spec()
+
+    ra.set_ticks(number=4)
+    assert ra._model.formatter_locator.number == 4
+    ra.set_format_unit(u.deg)
+    assert ra.get_format_unit() == ra._model.get_format_unit() == u.deg
+    ra.set_minor_frequency(3)
+    ra.display_minor_ticks(True)
+    assert ra._model.minor_frequency == 3 and ra._model.display_minor_ticks
+    assert ra._model.spec().minor_frequency == 3
+    dec.set_coord_type("scalar")
+    assert dec._model.coord_type == "scalar"
+    assert isinstance(dec._formatter_locator, ScalarFormatterLocator)
+    with pytest.warns(AstropyDeprecationWarning):
+        dec.coord_type = "latitude"
+    assert dec._model.coord_type == "latitude"
+
+    # The cursor readout formats through the model once ticks are laid out
+    assert ra.format_coord(266.4) == ""
+    ra.get_ticks()
+    assert ra.format_coord(266.4, format="ascii") == ra._model.format_coord(
+        266.4, format="ascii"
+    )
+    assert (
+        ra.format_coord(266.4, format="ascii")
+        == ra.formatter([266.4] * u.deg, spacing=ra._model.spacing, format="ascii")[0]
+    )

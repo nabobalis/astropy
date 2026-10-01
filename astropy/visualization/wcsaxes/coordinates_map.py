@@ -3,6 +3,7 @@
 from collections import OrderedDict
 from textwrap import indent
 
+from ._model import AxesModel
 from .coordinate_helpers import CoordinateHelper
 from .coordinate_range import find_coordinate_range
 from .frame import RectangularFrame, RectangularFrame1D
@@ -56,61 +57,23 @@ class CoordinatesMap:
 
         self.frame = frame_class(axes, self._transform, path=previous_frame_path)
 
-        # Set up coordinates
-        self._coords = []
-        self._aliases = {}
-
-        visible_count = 0
-
-        for index in range(len(coord_meta["type"])):
-            # Extract coordinate metadata
-            coord_type = coord_meta["type"][index]
-            coord_wrap = coord_meta["wrap"][index]
-            coord_unit = coord_meta["unit"][index]
-            name = coord_meta["name"][index]
-
-            visible = True
-            if "visible" in coord_meta:
-                visible = coord_meta["visible"][index]
-
-            format_unit = None
-            if "format_unit" in coord_meta:
-                format_unit = coord_meta["format_unit"][index]
-
-            default_label = name[0] if isinstance(name, (tuple, list)) else name
-            if "default_axis_label" in coord_meta:
-                default_label = coord_meta["default_axis_label"][index]
-
-            coord_index = None
-            if visible:
-                visible_count += 1
-                coord_index = visible_count - 1
-
-            self._coords.append(
-                CoordinateHelper(
-                    parent_axes=axes,
-                    parent_map=self,
-                    transform=self._transform,
-                    coord_index=coord_index,
-                    coord_type=coord_type,
-                    coord_wrap=coord_wrap,
-                    coord_unit=coord_unit,
-                    format_unit=format_unit,
-                    frame=self.frame,
-                    default_label=default_label,
-                )
+        # Set up coordinates. The model holds what each coordinate is and
+        # how its ticks are chosen; the helpers hold the matplotlib artists.
+        self._model = AxesModel.from_coord_meta(coord_meta, self._transform.transform)
+        self._coords = [
+            CoordinateHelper(
+                parent_axes=axes,
+                parent_map=self,
+                transform=self._transform,
+                frame=self.frame,
+                model=model,
             )
+            for model in self._model
+        ]
 
-            # Set up aliases for coordinates
-            if isinstance(name, tuple):
-                for nm in name:
-                    nm = nm.lower()
-                    # Do not replace an alias already in the map if we have
-                    # more than one alias for this axis.
-                    if nm not in self._aliases:
-                        self._aliases[nm] = index
-            else:
-                self._aliases[name.lower()] = index
+    @property
+    def _aliases(self):
+        return self._model.aliases
 
     def __getitem__(self, item):
         if isinstance(item, str):

@@ -635,6 +635,54 @@ class CoordinateHelper:
         """
         return list(self._ticks.get_visible_axes())
 
+    def get_ticks(self, minor=False):
+        """
+        Get where the ticks of this coordinate cross the frame.
+
+        The ticks are computed from the current axes limits and figure size,
+        so this can be called before the figure is drawn, for example to show
+        the ticks in another plotting toolkit. On each spine, the ticks are
+        in the same order as the labels from
+        `~astropy.visualization.wcsaxes.coordinate_helpers.CoordinateHelper.get_ticklabels`.
+
+        Parameters
+        ----------
+        minor : bool, optional
+            Whether to return the minor ticks instead of the major ticks.
+            Minor ticks are only computed if they are displayed, see
+            `~astropy.visualization.wcsaxes.coordinate_helpers.CoordinateHelper.display_minor_ticks`.
+
+        Returns
+        -------
+        dict
+            Maps the name of each spine of the frame to an ``(n, 2)`` array
+            of the positions of the ticks on it, in data coordinates.
+        """
+        self.parent_axes._update_tick_and_label_positions()
+        pixel = self._ticks.minor_pixel if minor else self._ticks.pixel
+        return {
+            axis: np.array(pixel.get(axis, []), dtype=float).reshape(-1, 2)
+            for axis in self.frame
+        }
+
+    def get_ticklabels(self):
+        """
+        Get the labels of the major ticks of this coordinate.
+
+        The labels are computed as in
+        `~astropy.visualization.wcsaxes.coordinate_helpers.CoordinateHelper.get_ticks`,
+        and are the full labels, before the part that repeats the previous
+        label on the spine is dropped for drawing.
+
+        Returns
+        -------
+        dict
+            Maps the name of each spine of the frame to a list of strings,
+            one per tick.
+        """
+        self.parent_axes._update_tick_and_label_positions()
+        return {axis: list(self._ticklabels.text.get(axis, [])) for axis in self.frame}
+
     def set_ticks_visible(self, visible):
         """
         Set whether ticks are visible or not.

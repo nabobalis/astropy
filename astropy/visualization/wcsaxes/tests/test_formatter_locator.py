@@ -1,5 +1,9 @@
 # Licensed under a 3-clause BSD style license - see LICENSE.rst
 
+import os
+import subprocess
+import sys
+
 import numpy as np
 import pytest
 from matplotlib import rc_context
@@ -707,3 +711,38 @@ def test_set_major_formatter_rejects_malformed_separator():
 
     with pytest.raises(ValueError, match="Invalid format"):
         ax.coords[1].set_major_formatter("dd:mm:ssXs")
+
+
+def test_formatter_locator_without_matplotlib():
+    # The locators and formatters import, and give the same labels as with
+    # matplotlib's default rcParams, where matplotlib cannot be imported.
+    code = """
+import sys
+
+sys.modules["matplotlib"] = None
+
+from astropy import units as u
+from astropy.visualization.wcsaxes.formatter_locator import (
+    AngleFormatterLocator,
+    ScalarFormatterLocator,
+)
+
+fl = AngleFormatterLocator(number=5)
+values, spacing = fl.locator(-2.0, 2.0)
+print(*fl.formatter(values, spacing=spacing), sep="|")
+fl = ScalarFormatterLocator(number=4, unit=u.m)
+values, spacing = fl.locator(-1.0, 1.0)
+print(*fl.formatter(values, spacing=spacing), sep="|")
+"""
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        encoding="utf-8",
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.splitlines() == [
+        "\N{MINUS SIGN}2°|\N{MINUS SIGN}1°|0°|1°|2°",
+        "\N{MINUS SIGN}0.5|0.0|0.5",
+    ]

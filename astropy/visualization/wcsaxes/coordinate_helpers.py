@@ -16,6 +16,10 @@ from astropy import units as u
 from astropy.utils.decorators import deprecated_renamed_argument
 from astropy.utils.exceptions import AstropyDeprecationWarning
 
+# wrap_angle_at moved to _layout and is used here too. The ticks use the name
+# in _layout, so replacing coordinate_helpers.wrap_angle_at no longer changes
+# them.
+from ._layout import CoordSpec, grid_lines, label_store, place_ticks, wrap_angle_at
 from .axislabels import AxisLabels
 from .formatter_locator import AngleFormatterLocator, ScalarFormatterLocator
 from .frame import EllipticalFrame, RectangularFrame1D
@@ -37,13 +41,6 @@ LINES_TO_PATCHES_LINESTYLE = {
     " ": "none",
     "": "none",
 }
-
-
-def wrap_angle_at(values, coord_wrap):
-    # On ARM processors, np.mod emits warnings if there are NaN values in the
-    # array, although this doesn't seem to happen on other processors.
-    with np.errstate(invalid="ignore"):
-        return np.mod(values - coord_wrap, 360.0) - (360.0 - coord_wrap)
 
 
 class CoordinateHelper:
@@ -638,6 +635,54 @@ class CoordinateHelper:
         """
         return list(self._ticks.get_visible_axes())
 
+    def get_ticks(self, minor=False):
+        """
+        Get where the ticks of this coordinate cross the frame.
+
+        The ticks are computed from the current axes limits and figure size,
+        so this can be called before the figure is drawn, for example to show
+        the ticks in another plotting toolkit. On each spine, the ticks are
+        in the same order as the labels from
+        `~astropy.visualization.wcsaxes.coordinate_helpers.CoordinateHelper.get_ticklabels`.
+
+        Parameters
+        ----------
+        minor : bool, optional
+            Whether to return the minor ticks instead of the major ticks.
+            Minor ticks are only computed if they are displayed, see
+            `~astropy.visualization.wcsaxes.coordinate_helpers.CoordinateHelper.display_minor_ticks`.
+
+        Returns
+        -------
+        dict
+            Maps the name of each spine of the frame to an ``(n, 2)`` array
+            of the positions of the ticks on it, in data coordinates.
+        """
+        self.parent_axes._update_tick_and_label_positions()
+        pixel = self._ticks.minor_pixel if minor else self._ticks.pixel
+        return {
+            axis: np.array(pixel.get(axis, []), dtype=float).reshape(-1, 2)
+            for axis in self.frame
+        }
+
+    def get_ticklabels(self):
+        """
+        Get the labels of the major ticks of this coordinate.
+
+        The labels are computed as in
+        `~astropy.visualization.wcsaxes.coordinate_helpers.CoordinateHelper.get_ticks`,
+        and are the full labels, before the part that repeats the previous
+        label on the spine is dropped for drawing.
+
+        Returns
+        -------
+        dict
+            Maps the name of each spine of the frame to a list of strings,
+            one per tick.
+        """
+        self.parent_axes._update_tick_and_label_positions()
+        return {axis: list(self._ticklabels.text.get(axis, [])) for axis in self.frame}
+
     def set_ticks_visible(self, visible):
         """
         Set whether ticks are visible or not.
@@ -981,264 +1026,99 @@ class CoordinateHelper:
 
         renderer.close_group("axis labels")
 
+    def _layout_spec(self):
+        return CoordSpec(
+            coord_index=self.coord_index,
+            coord_type=self.coord_type,
+            coord_unit=self.coord_unit,
+            coord_wrap=self.coord_wrap,
+            coord_scale_to_deg=self._coord_scale_to_deg,
+            locator=self.locator,
+            formatter=self.formatter,
+            minor_locator=(
+                self._formatter_locator.minor_locator
+                if self._ticks.get_display_minor_ticks()
+                else None
+            ),
+            minor_frequency=self.get_minor_frequency(),
+        )
+
     def _update_ticks(self):
         if self.coord_index is None:
             return
-
-        # TODO: this method should be optimized for speed
-
-        # Here we determine the location and rotation of all the ticks. For
-        # each axis, we can check the intersections for the specific
-        # coordinate and once we have the tick positions, we can use the WCS
-        # to determine the rotations.
-
-        coord_range = self.parent_map._coord_range
-
-        # First find the ticks we want to show
-        tick_world_coordinates, self._fl_spacing = self.locator(
-            *coord_range[self.coord_index]
-        )
-
-        if self._ticks.get_display_minor_ticks():
-            minor_ticks_w_coordinates = self._formatter_locator.minor_locator(
-                self._fl_spacing,
-                self.get_minor_frequency(),
-                *coord_range[self.coord_index],
-            )
 
         # We want to allow non-standard rectangular frames, so we just rely on
         # the parent axes to tell us what the bounding frame is.
         from . import conf
 
-        frame = self.frame.sample(conf.frame_boundary_samples)
-
         self._ticks.clear()
         self._ticklabels.clear()
-        self._lblinfo = []
-        self._lbl_world = []
+
         # Look up parent axes' transform from data to figure coordinates.
         #
         # See:
         # https://matplotlib.org/stable/tutorials/advanced/transforms_tutorial.html#the-transformation-pipeline
         transData = self.parent_axes.transData
-        invertedTransLimits = transData.inverted()
 
-        for axis, spine in frame.items():
-            if spine.data.size == 0:
-                continue
+        placed = place_ticks(
+            self._layout_spec(),
+            self.parent_map._coord_range[self.coord_index],
+            self.frame.sample(conf.frame_boundary_samples),
+            self.transform.transform,
+            transData.transform,
+            transData.inverted().transform,
+            origin=self.frame.origin,
+            frame_1d=isinstance(self.frame, RectangularFrame1D),
+        )
+        self._fl_spacing = placed.spacing
+        self._lbl_world = placed.label_world
 
-            if not isinstance(self.frame, RectangularFrame1D):
-                # Determine tick rotation in display coordinates and compare to
-                # the normal angle in display coordinates.
-
-                pixel0 = spine.data
-                world0 = spine.world[:, self.coord_index]
-                if np.isnan(world0).all():
-                    continue
-                axes0 = transData.transform(pixel0)
-
-                # Define a helper function to minimize code repetition
-                def shifted_pixel_to_world(index, shift):
-                    pixel = axes0.copy()
-                    pixel[:, index] += shift
-                    pixel = invertedTransLimits.transform(pixel)
-                    with np.errstate(invalid="ignore"):
-                        return self.transform.transform(pixel)[:, self.coord_index]
-
-                # Advance 2 pixels to the right in figure coordinates
-                world1 = shifted_pixel_to_world(0, 2)
-                dx = world1 - world0
-
-                # Where advancing to the right results in NaN, advance to the left instead
-                invalid1 = np.isnan(world1)
-                if invalid1.any():
-                    world1 = shifted_pixel_to_world(0, -2)
-                    dx[invalid1] = (world0 - world1)[invalid1]
-
-                # Advance 2 pixels up in figure coordinates
-                amount = 2.0 if self.frame.origin == "lower" else -2.0
-                world2 = shifted_pixel_to_world(1, amount)
-                dy = world2 - world0
-
-                # Where advancing up results in NaN, advance down instead
-                invalid2 = np.isnan(world2)
-                if invalid2.any():
-                    world2 = shifted_pixel_to_world(1, -amount)
-                    dy[invalid2] = (world0 - world2)[invalid2]
-
-                # Rotate by 90 degrees
-                dx, dy = -dy, dx
-
-                if self.coord_type == "longitude":
-                    if self._coord_scale_to_deg is not None:
-                        dx *= self._coord_scale_to_deg
-                        dy *= self._coord_scale_to_deg
-
-                    # Here we wrap at 180 not self.coord_wrap since we want to
-                    # always ensure abs(dx) < 180 and abs(dy) < 180
-                    dx = wrap_angle_at(dx, 180.0)
-                    dy = wrap_angle_at(dy, 180.0)
-
-                tick_angle = np.degrees(np.arctan2(dy, dx))
-
-                normal_angle_full = np.hstack(
-                    [spine.normal_angle, spine.normal_angle[-1]]
-                )
-                with np.errstate(invalid="ignore"):
-                    reset = ((normal_angle_full - tick_angle) % 360 > 90.0) & (
-                        (tick_angle - normal_angle_full) % 360 > 90.0
-                    )
-                tick_angle[reset] -= 180.0
-
-            else:
-                rotation = 90 if axis == "b" else -90
-                tick_angle = np.zeros((conf.frame_boundary_samples,)) + rotation
-
-            # We find for each interval the starting and ending coordinate,
-            # ensuring that we take wrapping into account correctly for
-            # longitudes.
-            w1 = spine.world[:-1, self.coord_index]
-            w2 = spine.world[1:, self.coord_index]
-
-            if self.coord_type == "longitude":
-                if self._coord_scale_to_deg is not None:
-                    w1 = w1 * self._coord_scale_to_deg
-                    w2 = w2 * self._coord_scale_to_deg
-
-                w1 = wrap_angle_at(w1, self.coord_wrap.to_value(u.deg))
-                w2 = wrap_angle_at(w2, self.coord_wrap.to_value(u.deg))
-                with np.errstate(invalid="ignore"):
-                    w1[w2 - w1 > 180.0] += 360
-                    w2[w1 - w2 > 180.0] += 360
-
-                if self._coord_scale_to_deg is not None:
-                    w1 = w1 / self._coord_scale_to_deg
-                    w2 = w2 / self._coord_scale_to_deg
-
-            # For longitudes, we need to check ticks as well as ticks + 360,
-            # since the above can produce pairs such as 359 to 361 or 0.5 to
-            # 1.5, both of which would match a tick at 0.75. Otherwise we just
-            # check the ticks determined above.
-            self._compute_ticks(tick_world_coordinates, spine, axis, w1, w2, tick_angle)
-
-            if self._ticks.get_display_minor_ticks():
-                self._compute_ticks(
-                    minor_ticks_w_coordinates,
-                    spine,
-                    axis,
-                    w1,
-                    w2,
-                    tick_angle,
-                    ticks="minor",
-                )
-
-        # format tick labels, add to scene
-        text = self.formatter(u.Quantity(self._lbl_world), spacing=self._fl_spacing)
-
-        for kwargs, txt in zip(self._lblinfo, text):
-            self._ticklabels.add(text=txt, **kwargs)
-
-    def _compute_ticks(
-        self, tick_world_coordinates, spine, axis, w1, w2, tick_angle, ticks="major"
-    ):
-        if self.coord_type == "longitude":
-            tick_world_coordinates_values = tick_world_coordinates.to_value(u.deg)
-            tick_world_coordinates_values = np.hstack(
-                [tick_world_coordinates_values, tick_world_coordinates_values + 360]
-            )
-            tick_world_coordinates_values *= u.deg.to(self.coord_unit)
-        else:
-            tick_world_coordinates_values = tick_world_coordinates.to_value(
-                self.coord_unit
+        major = placed.major
+        for axis, world, (x, y), angle, disp in zip(
+            major.axis, major.world, major.pixel, major.angle, major.disp
+        ):
+            self._ticks.add(
+                axis=axis,
+                pixel=(x, y),
+                world=world,
+                angle=angle,
+                axis_displacement=disp,
             )
 
-        for t in tick_world_coordinates_values:
-            # Find steps where a tick is present. We have to check
-            # separately for the case where the tick falls exactly on the
-            # frame points, otherwise we'll get two matches, one for w1 and
-            # one for w2.
-            with np.errstate(invalid="ignore"):
-                intersections = np.hstack(
-                    [
-                        np.nonzero((t - w1) == 0)[0],
-                        np.nonzero(((t - w1) * (t - w2)) < 0)[0],
-                    ]
+        minor = placed.minor
+        for axis, world, (x, y), angle, disp in zip(
+            minor.axis, minor.world, minor.pixel, minor.angle, minor.disp
+        ):
+            self._ticks.add_minor(
+                minor_axis=axis,
+                minor_pixel=(x, y),
+                minor_world=world,
+                minor_angle=angle,
+                minor_axis_displacement=disp,
+            )
+
+        # The labels go through label_store, as for any other caller of
+        # _layout. Kept apart from the loop above: a formatter that returns
+        # fewer labels than there are ticks drops labels, not ticks.
+        labels = label_store(placed)
+        for axis in labels.world:
+            for world, data, angle, tick_angle, disp, text in zip(
+                labels.world[axis],
+                labels.data[axis],
+                labels.angle[axis],
+                labels.tick_angle[axis],
+                labels.disp[axis],
+                labels.text[axis],
+            ):
+                self._ticklabels.add(
+                    axis=axis,
+                    data=data,
+                    world=world,
+                    angle=angle,
+                    tick_angle=tick_angle,
+                    axis_displacement=disp,
+                    text=text,
                 )
-
-            # But we also need to check for intersection with the last w2
-            if t - w2[-1] == 0:
-                intersections = np.append(intersections, len(w2) - 1)
-
-            # Loop over ticks, and find exact pixel coordinates by linear
-            # interpolation
-            for imin in intersections:
-                imax = imin + 1
-
-                if np.allclose(w1[imin], w2[imin], rtol=1.0e-13, atol=1.0e-13):
-                    continue  # tick is exactly aligned with frame
-                else:
-                    frac = (t - w1[imin]) / (w2[imin] - w1[imin])
-                    x_data_i = spine.data[imin, 0] + frac * (
-                        spine.data[imax, 0] - spine.data[imin, 0]
-                    )
-                    y_data_i = spine.data[imin, 1] + frac * (
-                        spine.data[imax, 1] - spine.data[imin, 1]
-                    )
-                    delta_angle = tick_angle[imax] - tick_angle[imin]
-                    if delta_angle > 180.0:
-                        delta_angle -= 360.0
-                    elif delta_angle < -180.0:
-                        delta_angle += 360.0
-                    angle_i = tick_angle[imin] + frac * delta_angle
-
-                if self.coord_type == "longitude":
-                    if self._coord_scale_to_deg is not None:
-                        world = t * self._coord_scale_to_deg
-                    else:
-                        world = t
-
-                    world = wrap_angle_at(world, self.coord_wrap.to_value(u.deg))
-
-                    if self._coord_scale_to_deg is not None:
-                        world /= self._coord_scale_to_deg
-
-                else:
-                    world = t
-
-                if ticks == "major":
-                    self._ticks.add(
-                        axis=axis,
-                        pixel=(x_data_i, y_data_i),
-                        world=world,
-                        angle=angle_i,
-                        axis_displacement=imin + frac,
-                    )
-
-                    # store information to pass to ticklabels.add
-                    # it's faster to format many ticklabels at once outside
-                    # of the loop
-                    self._lblinfo.append(
-                        dict(
-                            axis=axis,
-                            data=(x_data_i, y_data_i),
-                            world=world,
-                            angle=spine.normal_angle[imin],
-                            tick_angle=angle_i,
-                            axis_displacement=imin + frac,
-                        )
-                    )
-                    self._lbl_world.append(
-                        (world * self.coord_unit).to(tick_world_coordinates.unit)
-                    )
-
-                else:
-                    self._ticks.add_minor(
-                        minor_axis=axis,
-                        minor_pixel=(x_data_i, y_data_i),
-                        minor_world=world,
-                        minor_angle=angle_i,
-                        minor_axis_displacement=imin + frac,
-                    )
 
     def display_minor_ticks(self, display_minor_ticks):
         """
@@ -1279,64 +1159,22 @@ class CoordinateHelper:
             self._grid_lines.append(Path(pixel))
 
     def _update_grid_lines(self):
-        # For 3-d WCS with a correlated third axis, the *proper* way of
-        # drawing a grid should be to find the world coordinates of all pixels
-        # and drawing contours. What we are doing here assumes that we can
-        # define the grid lines with just two of the coordinates (and
-        # therefore assumes that the other coordinates are fixed and set to
-        # the value in the slice). Here we basically assume that if the WCS
-        # had a third axis, it has been abstracted away in the transformation.
-
         if self.coord_index is None:
-            return
-
-        coord_range = self.parent_map._coord_range
-
-        tick_world_coordinates, spacing = self.locator(*coord_range[self.coord_index])
-        tick_world_coordinates_values = tick_world_coordinates.to_value(self.coord_unit)
-
-        n_coord = len(tick_world_coordinates_values)
-        if n_coord == 0:
             return
 
         from . import conf
 
-        n_samples = conf.grid_samples
-
-        xy_world = np.zeros((n_samples * n_coord, 2))
-
-        self._grid_lines = []
-
-        for iw, w in enumerate(tick_world_coordinates_values):
-            subset = slice(iw * n_samples, (iw + 1) * n_samples)
-            if self.coord_index == 0:
-                xy_world[subset, 0] = np.repeat(w, n_samples)
-                xy_world[subset, 1] = np.linspace(
-                    coord_range[1][0], coord_range[1][1], n_samples
-                )
-            else:
-                xy_world[subset, 0] = np.linspace(
-                    coord_range[0][0], coord_range[0][1], n_samples
-                )
-                xy_world[subset, 1] = np.repeat(w, n_samples)
-
-        # We now convert all the world coordinates to pixel coordinates in a
-        # single go rather than doing this in the gridline to path conversion
-        # to fully benefit from vectorized coordinate transformations.
-
-        # Transform line to pixel coordinates
-        pixel = self.transform.inverted().transform(xy_world)
-
-        # Create round-tripped values for checking
-        xy_world_round = self.transform.transform(pixel)
-
-        for iw in range(n_coord):
-            subset = slice(iw * n_samples, (iw + 1) * n_samples)
-            self._grid_lines.append(
-                self._get_gridline(
-                    xy_world[subset], pixel[subset], xy_world_round[subset]
-                )
-            )
+        lines = grid_lines(
+            self._layout_spec(),
+            self.parent_map._coord_range,
+            conf.grid_samples,
+            self.transform.transform,
+            # As before, the inverse is only built when there are ticks.
+            lambda world: self.transform.inverted().transform(world),
+        )
+        # Without ticks there are no grid lines, and the previous ones stay.
+        if lines:
+            self._grid_lines = [Path(pixel, codes=codes) for pixel, codes in lines]
 
     def add_tickable_gridline(self, name, constant):
         """
@@ -1377,7 +1215,7 @@ class CoordinateHelper:
 
         n_samples = conf.grid_samples
 
-        # See comment in _update_grid_lines() about a WCS with more than 2 axes
+        # See comment in _layout.grid_lines() about a WCS with more than 2 axes
 
         xy_world = np.zeros((n_samples, 2))
         xy_world[:, self.coord_index] = np.repeat(constant, n_samples)

@@ -34,6 +34,19 @@ ZOOMED = {
     "tan": ((50, 210), (150, 270)),
 }
 
+# matplotlib draws hour angles as mathtext; the demos draw Unicode letters
+MATHTEXT = {
+    r"$\mathregular{^h}$": "\N{MODIFIER LETTER SMALL H}",
+    r"$\mathregular{^m}$": "\N{MODIFIER LETTER SMALL M}",
+    r"$\mathregular{^s}$": "\N{MODIFIER LETTER SMALL S}",
+}
+
+
+def plain(text):
+    for mathtext, unicode in MATHTEXT.items():
+        text = text.replace(mathtext, unicode)
+    return text
+
 
 def wcsaxes(case, xlim, ylim):
     w, h = case.size
@@ -43,10 +56,10 @@ def wcsaxes(case, xlim, ylim):
     ax.set_xlim(*xlim)
     ax.set_ylim(*ylim)
     ax.coords.grid()
-    for coord, c in zip(ax.coords, case.coords):
-        coord.set_ticklabel_position(c.spine)
-        coord.set_axislabel_position(c.spine)
-        coord.set_axislabel(c.label)
+    for coord, c in zip(ax.coords, case.model):
+        coord.set_ticklabel_position(c.get_ticklabel_position())
+        coord.set_axislabel_position(c.get_axislabel_position())
+        coord.set_axislabel(c.axislabel)
         # Keep the drawn tick label boxes, which AxisLabels then overwrites
         # with their union
         def spy(renderer, coord=coord, draw=coord._ticklabels.draw):
@@ -74,13 +87,14 @@ def compare(case, xlim, ylim, result):
     ax = wcsaxes(case, xlim, ylim)
     rows = []
     for coord, out in zip(ax.coords, result.coords):
-        ticks, labels, major = coord._ticks, coord._ticklabels, out.placed.major
+        ticks, labels, major = coord._ticks, coord._ticklabels, out.ticks.major
         spine = coord._ticklabels.get_visible_axes()[0]
-        if out.axis_label:
+        if out.axis_labels:
+            (position,) = out.axis_labels.values()
             axis_label = coord._axislabels
             axis_label = max(
-                max_diff(axis_label.get_position(), out.axis_label[:2]),
-                max_diff(axis_label.get_rotation(), out.axis_label[2], period=360),
+                max_diff(axis_label.get_position(), position[:2]),
+                max_diff(axis_label.get_rotation(), position[2], period=360),
             )
         else:
             # No tick labels, so neither draws an axis label
@@ -90,7 +104,8 @@ def compare(case, xlim, ylim, result):
             "world": np.array_equal(flat(ticks.world), major.world),
             "pixel": max_diff(flat(ticks.pixel), major.pixel),
             "angle": max_diff(flat(ticks.angle), major.angle, period=360),
-            "texts": dict(labels.text) == dict(out.labels.text),
+            "texts": {a: [plain(t) for t in ts] for a, ts in labels.text.items()}
+            == dict(out.labels.text),
             "grid": len(coord._grid_lines) == len(out.grid) and all(
                 np.array_equal(path.vertices, pixel, equal_nan=True)
                 and np.array_equal(path.codes, codes)
@@ -98,8 +113,8 @@ def compare(case, xlim, ylim, result):
             ),
             "drawn": f"{len(out.kept)}/{len(coord.drawn_boxes)}",
             "anchor": max_diff(
-                [labels.xy[spine].get(i, (np.inf,) * 2) for i in out.xy[spine]],
-                list(out.xy[spine].values()),
+                [labels.xy[spine].get(i, (np.inf,) * 2) for i in out.anchors[spine]],
+                list(out.anchors[spine].values()),
             ),
             "box": max_diff([box for _, _, box in out.kept], coord.drawn_boxes),
             "axis label": axis_label,

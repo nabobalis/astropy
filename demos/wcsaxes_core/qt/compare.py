@@ -36,6 +36,19 @@ TOL_GEOMETRY = 1e-6  # display pixels, and degrees for tick angles
 TOL_TEXT = 1.0  # display pixels
 TOL_MATHTEXT = 4.0
 
+# matplotlib draws hour angles as mathtext; the demos draw Unicode letters
+MATHTEXT = {
+    r"$\mathregular{^h}$": "\N{MODIFIER LETTER SMALL H}",
+    r"$\mathregular{^m}$": "\N{MODIFIER LETTER SMALL M}",
+    r"$\mathregular{^s}$": "\N{MODIFIER LETTER SMALL S}",
+}
+
+
+def plain(text):
+    for mathtext, unicode in MATHTEXT.items():
+        text = text.replace(mathtext, unicode)
+    return text
+
 
 def matplotlib_render(view):
     case, (box, xlim, ylim) = view.case, view.view()
@@ -48,13 +61,13 @@ def matplotlib_render(view):
     ax.set_aspect("auto")  # the view already has square pixels; keep its box
     ax.set_xlim(xlim)
     ax.set_ylim(ylim)
-    for coord, c in zip(ax.coords, case.coords):
-        # The demo's hand-written coordinate metadata is what WCSAxes derives
-        assert coord.coord_type == c.type and coord.coord_wrap == c.wrap
-        assert coord.get_format_unit() == c.format_unit
-        coord.set_ticklabel_position(c.spine)
-        coord.set_axislabel_position(c.spine)
-        coord.set_axislabel(c.label)
+    for coord, c in zip(ax.coords, case.model):
+        # Both read the coordinate metadata from the WCS the same way
+        assert coord.coord_type == c.coord_type and coord.coord_wrap == c.coord_wrap
+        assert coord.get_format_unit() == c.get_format_unit()
+        coord.set_ticklabel_position(c.get_ticklabel_position())
+        coord.set_axislabel_position(c.get_axislabel_position())
+        coord.set_axislabel(c.axislabel)
         coord.set_ticklabel(exclude_overlapping=True)
         coord.grid(color="white", alpha=0.6)
 
@@ -78,8 +91,8 @@ def differences(view, result, ax, drawn):
     to_display, _ = wcs_qt.display_transform(*view.view())
     tick_px = tick_deg = 0.0
     n_ticks = 0
-    for coord, r in zip(ax.coords, result):
-        m = r.placed.major
+    for coord, r in zip(ax.coords, result.coords):
+        m = r.ticks.major
         for axis in "brtl":
             on = np.array(m.axis) == axis
             assert np.array_equal(m.world[on], coord._ticks.world[axis])
@@ -89,7 +102,8 @@ def differences(view, result, ax, drawn):
             angle = np.abs((m.angle[on] - coord._ticks.angle[axis] + 180) % 360 - 180)
             tick_deg = max(tick_deg, angle.max(initial=0))
             n_ticks += on.sum()
-        assert dict(r.labels.text) == dict(coord._ticklabels.text), "label strings"
+        mpl_text = {a: [plain(t) for t in ts] for a, ts in coord._ticklabels.text.items()}
+        assert dict(r.labels.text) == mpl_text, "label strings"
         assert len(r.grid) == len(coord._grid_lines)
         for (pixel, codes), path in zip(r.grid, coord._grid_lines):
             assert np.array_equal(codes, path.codes)
@@ -98,15 +112,15 @@ def differences(view, result, ax, drawn):
     # Tick labels of every coordinate, then axis labels, as WCSAxes draws them
     mine = [
         (r.labels.text[axis][i], *r.anchors[axis][i], 0.0)
-        for r in result
+        for r in result.coords
         for axis, i, _ in r.kept
     ]
     mine += [
-        (c.label, *r.axis_label)
-        for c, r in zip(view.case.coords, result)
-        if r.axis_label
+        (r.axis_label_text, *position)
+        for r in result.coords
+        for position in r.axis_labels.values()
     ]
-    assert [t[0] for t in mine] == [t[0] for t in drawn], "drawn labels"
+    assert [t[0] for t in mine] == [plain(t[0]) for t in drawn], "drawn labels"
     assert all(a[3] % 360 == b[3] % 360 for a, b in zip(mine, drawn)), "rotations"
     text_px = max(abs(a[k] - b[k]) for a, b in zip(mine, drawn) for k in (1, 2))
     return n_ticks, tick_px, tick_deg, len(mine), text_px
@@ -143,7 +157,7 @@ def side_by_side(qt_image, rgba, path):
     out.fill(Qt.white)
     painter = QPainter(out)
     painter.drawText(
-        QRectF(0, 0, w, 30), Qt.AlignCenter, "Qt, laid out by wcsaxes._layout"
+        QRectF(0, 0, w, 30), Qt.AlignCenter, "Qt, laid out by wcsaxes._model"
     )
     painter.drawText(QRectF(w, 0, w, 30), Qt.AlignCenter, "matplotlib WCSAxes")
     painter.drawImage(0, 30, qt_image)
@@ -182,6 +196,6 @@ if __name__ == "__main__":
                 f"{n_labels:7} {text_px:9.2f} {limit:6.1f}"
             )
 
-    print("Tick world values, label strings, the labels drawn, and grid lines")
-    print(f"are identical. Tick limit: {TOL_GEOMETRY:g}.")
+    print("Tick world values, label strings (hours in Unicode), the labels")
+    print(f"drawn, and grid lines are identical. Tick limit: {TOL_GEOMETRY:g}.")
     sys.exit(0 if ok else 1)

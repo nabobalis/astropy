@@ -1,6 +1,6 @@
 """
 WCSAxes-style ticks, tick labels, grid lines and axis labels in a plain Qt
-widget, laid out by astropy.visualization.wcsaxes._layout without a matplotlib
+widget, laid out by astropy.visualization.wcsaxes._model without a matplotlib
 Figure, Axes or renderer.
 
     python wcs_qt.py [hpc|car|tan]            drag to pan, scroll to zoom
@@ -18,10 +18,8 @@ from PyQt5.QtCore import QPointF, QRectF, Qt
 from PyQt5.QtGui import QColor, QFont, QFontMetricsF, QImage, QPainter, QPen, QPolygonF
 from PyQt5.QtWidgets import QApplication, QWidget
 
-from astropy import units as u
-from astropy.visualization.wcsaxes import _layout, conf
-from astropy.visualization.wcsaxes.coordinate_range import find_coordinate_range
-from astropy.visualization.wcsaxes.formatter_locator import AngleFormatterLocator
+from astropy.visualization.wcsaxes._layout import MOVETO
+from astropy.visualization.wcsaxes._model import AxesModel
 from astropy.wcs import WCS
 
 # Matplotlib's defaults at 100 dpi, in display pixels
@@ -30,23 +28,9 @@ PT = DPI / 72
 TICK_SIZE, TICK_PAD, FONT_SIZE, LINE_WIDTH = 3.5 * PT, 3.5 * PT, 10 * PT, 0.8 * PT
 # Space around the frame for the labels: left, bottom, right, top
 MARGINS = np.array([105, 75, 25, 25])
-# As TickLabels.simplify_labels with matplotlib's default rcParams
-NUMERICAL_CHARS = "0123456789.+\N{MINUS SIGN}"
-# The formatter writes hour angles in mathtext; Qt gets Unicode instead
-MATHTEXT = {
-    r"$\mathregular{^h}$": "ʰ",
-    r"$\mathregular{^m}$": "ᵐ",
-    r"$\mathregular{^s}$": "ˢ",
-}
 
 
-def plain(text):
-    for mathtext, unicode in MATHTEXT.items():
-        text = text.replace(mathtext, unicode)
-    return text
-
-
-def make_case(ctype, unit, crval, cdelt, shape, coords, roll=0):
+def make_case(ctype, unit, crval, cdelt, shape, labels, spines, roll=0):
     wcs = WCS(naxis=2)
     wcs.wcs.ctype = ctype
     wcs.wcs.cunit = [unit] * 2
@@ -56,12 +40,20 @@ def make_case(ctype, unit, crval, cdelt, shape, coords, roll=0):
     wcs.wcs.crpix = [(nx + 1) / 2, (ny + 1) / 2]
     c, s = np.cos(np.radians(roll)), np.sin(np.radians(roll))
     wcs.wcs.pc = [[c, -s], [s, c]]
+    # As WCSAxes.reset_wcs does: until wcslib's set() runs, an arcsec header
+    # reports arcsec as its unit although the WCS returns degrees
+    wcs.wcs.set()
 
-    def pixel_to_world(xy):
-        return np.array(wcs.pixel_to_world_values(*xy.T)).T
-
-    def world_to_pixel(world):
-        return np.array(wcs.world_to_pixel_values(*world.T)).T
+    # The model reads the type, wrap, unit and format unit of each coordinate
+    # from the WCS, as WCSAxes does. The labels are drawn as plain text.
+    model = AxesModel.from_wcs(wcs)
+    model.text_format = "unicode"
+    for coord, label, spine in zip(model, labels, spines):
+        coord.axislabel = label
+        coord.set_ticklabel_position(spine)
+        coord.set_axislabel_position(spine)
+        coord.exclude_overlapping = True
+        coord.grid = True
 
     # Something to look at: a blob with ripples, row 0 at the bottom
     y, x = np.mgrid[:ny, :nx]
@@ -70,21 +62,11 @@ def make_case(ctype, unit, crval, cdelt, shape, coords, roll=0):
     image = (40 + 180 * image).astype(np.uint8)
     return SimpleNamespace(
         wcs=wcs,
-        # find_coordinate_range wants an object with .transform
-        p2w=SimpleNamespace(transform=pixel_to_world),
-        world_to_pixel=world_to_pixel,
+        model=model,
         image=image,
         qimage=QImage(
             image[::-1].tobytes(), nx, ny, nx, QImage.Format_Grayscale8
         ).copy(),
-        coords=coords,
-    )
-
-
-def coord(type, wrap, format_unit, label, spine):
-    """What WCSAxes reads from the WCS for one coordinate, and where its labels go."""
-    return SimpleNamespace(
-        type=type, wrap=wrap, format_unit=format_unit, label=label, spine=spine
     )
 
 
@@ -97,10 +79,8 @@ CASES = {
         cdelt=[0.333, 0.333],
         shape=(512, 512),
         roll=20,
-        coords=[
-            coord("longitude", 180 * u.deg, u.arcsec, "Solar X", "b"),
-            coord("latitude", None, u.arcsec, "Solar Y", "l"),
-        ],
+        labels=["Solar X", "Solar Y"],
+        spines="bl",
     ),
     # All-sky plate carree: longitude wraps from 360 to 0 at the centre
     "car": lambda: make_case(
@@ -109,22 +89,18 @@ CASES = {
         crval=[0, 0],
         cdelt=[-1, 1],
         shape=(180, 360),
-        coords=[
-            coord("longitude", 360 * u.deg, u.deg, "Galactic longitude", "b"),
-            coord("latitude", None, u.deg, "Galactic latitude", "l"),
-        ],
+        labels=["Galactic longitude", "Galactic latitude"],
+        spines="bl",
     ),
-    # Plain TAN: right ascension is labelled in hours, which needs mathtext
+    # Plain TAN: right ascension is labelled in hours
     "tan": lambda: make_case(
         ctype=["RA---TAN", "DEC--TAN"],
         unit="deg",
         crval=[266.4, -28.9],
         cdelt=[-0.0005, 0.0005],
         shape=(300, 400),
-        coords=[
-            coord("longitude", 360 * u.deg, u.hourangle, "Right ascension", "b"),
-            coord("latitude", None, u.deg, "Declination", "l"),
-        ],
+        labels=["Right ascension", "Declination"],
+        spines="bl",
     ),
 }
 
@@ -144,95 +120,18 @@ def display_transform(box, xlim, ylim):
 
 
 def layout(case, box, xlim, ylim, measure):
-    """Everything WCSAxes would draw, in display pixels, from the _layout core."""
+    """Everything WCSAxes would draw, in display pixels, from the model."""
     to_display, from_display = display_transform(box, xlim, ylim)
-    (x0, x1), (y0, y1) = xlim, ylim
-    outlines = {
-        "b": [[x0, y0], [x1, y0]],
-        "r": [[x1, y0], [x1, y1]],
-        "t": [[x1, y1], [x0, y1]],
-        "l": [[x0, y1], [x0, y0]],
-    }
-    spines = {}
-    for name, outline in outlines.items():
-        data = _layout.resample_spine(np.array(outline), conf.frame_boundary_samples)
-        with np.errstate(invalid="ignore"):
-            world = case.p2w.transform(data)
-        normal = _layout.spine_normal_angle(to_display(data))
-        spines[name] = _layout.SpineArrays(data, world, normal)
-
-    ranges = find_coordinate_range(
-        case.p2w,
-        [x0, x1, y0, y1],
-        [c.type for c in case.coords],
-        [u.deg] * 2,
-        [c.wrap for c in case.coords],
+    return case.model.layout(
+        xlim,
+        ylim,
+        to_display,
+        from_display,
+        measure=measure,
+        tick_size=TICK_SIZE,
+        pad=TICK_PAD,
+        font_size=FONT_SIZE,
     )
-
-    result, existing = [], []  # existing: tick label boxes kept so far
-    for index, c in enumerate(case.coords):
-        # WCSLIB gives world values in degrees, even for an arcsec header
-        fl = AngleFormatterLocator(unit=u.deg, format_unit=c.format_unit)
-        spec = _layout.CoordSpec(
-            coord_index=index,
-            coord_type=c.type,
-            coord_unit=u.deg,
-            coord_wrap=c.wrap,
-            coord_scale_to_deg=None,
-            locator=fl.locator,
-            formatter=fl.formatter,
-            minor_locator=None,
-            minor_frequency=5,
-        )
-        placed = _layout.place_ticks(
-            spec, ranges[index], spines, case.p2w.transform, to_display, from_display
-        )
-        grid = _layout.grid_lines(
-            spec, ranges, conf.grid_samples, case.p2w.transform, case.world_to_pixel
-        )
-
-        # Tick labels, stored as TickLabels stores them
-        labels = _layout.label_store(placed)
-        _layout.sort_labels(labels)
-        _layout.simplify_labels(labels, NUMERICAL_CHARS)
-        anchors = _layout.anchor_tick_labels(
-            labels, [c.spine], to_display, TICK_SIZE + TICK_PAD, measure
-        )
-
-        def extent(axis, i):
-            if labels.text[axis][i] == "":
-                return None
-            (x, y), (w, h) = anchors[axis][i], measure(labels.text[axis][i])
-            return (x - w / 2, y - h / 2, x + w / 2, y + h / 2)
-
-        kept = list(_layout.keep_tick_labels(labels, [c.spine], extent, True, existing))
-        existing += [box for *_, box in kept]
-        result.append(
-            SimpleNamespace(
-                placed=placed,
-                grid=grid,
-                labels=labels,
-                anchors=anchors,
-                kept=kept,
-                axis_label=None,
-            )
-        )
-
-    # Axis labels go beyond the box around all the tick labels
-    union = None
-    if existing:
-        boxes = np.array(existing)
-        union = (*boxes[:, :2].min(axis=0), *boxes[:, 2:].max(axis=0))
-    for c, r in zip(case.coords, result):
-        if r.kept:  # WCSAxes' default rule: no tick labels, no axis label
-            pixel = to_display(np.array(outlines[c.spine]))
-            x, y, normal = _layout.spine_midpoint(
-                pixel, _layout.spine_normal_angle(pixel)
-            )
-            r.axis_label = _layout.axis_label_position(
-                c.spine, x, y, normal, FONT_SIZE, FONT_SIZE, True, union
-            )
-    return result
 
 
 def draw(painter, case, box, xlim, ylim):
@@ -251,7 +150,6 @@ def draw(painter, case, box, xlim, ylim):
     def measure(text, *xy):
         # As matplotlib sizes a line of text: the advance width, and one em
         # (the font's typographic ascender plus descender) unless ink is taller
-        text = plain(text)
         ink = metrics.tightBoundingRect(text).height()
         return metrics.horizontalAdvance(text), max(ink, FONT_SIZE)
 
@@ -268,9 +166,9 @@ def draw(painter, case, box, xlim, ylim):
     )
 
     painter.setPen(QPen(QColor(255, 255, 255, 153), LINE_WIDTH))
-    for r in result:
-        for pixel, codes in r.grid:
-            starts = np.flatnonzero(codes == _layout.MOVETO)[1:]
+    for c in result.coords:
+        for pixel, codes in c.grid:
+            starts = np.flatnonzero(codes == MOVETO)[1:]
             for part in np.split(to_display(pixel), starts):
                 # A NaN vertex is a MOVETO of its own, so parts are clean
                 if len(part) > 1 and np.isfinite(part).all():
@@ -278,8 +176,8 @@ def draw(painter, case, box, xlim, ylim):
     painter.setClipping(False)
 
     painter.setPen(QPen(Qt.black, LINE_WIDTH))
-    for r in result:
-        m = r.placed.major
+    for c in result.coords:
+        m = c.ticks.major
         out = np.radians(m.angle + 180)  # ticks point out
         start = to_display(m.pixel)
         end = start + TICK_SIZE * np.column_stack([np.cos(out), np.sin(out)])
@@ -290,15 +188,14 @@ def draw(painter, case, box, xlim, ylim):
         painter.save()
         painter.translate(qt(xy))
         painter.rotate(-rotation)  # counter-clockwise, in y-up display space
-        painter.drawText(QRectF(-500, -50, 1000, 100), Qt.AlignCenter, plain(text))
+        painter.drawText(QRectF(-500, -50, 1000, 100), Qt.AlignCenter, text)
         painter.restore()
 
-    for c, r in zip(case.coords, result):
-        for axis, i, _ in r.kept:
-            text_at(r.labels.text[axis][i], r.anchors[axis][i])
-        if r.axis_label is not None:
-            x, y, rotation = r.axis_label
-            text_at(c.label, (x, y), rotation)
+    for c in result.coords:
+        for axis, i, _ in c.kept:
+            text_at(c.labels.text[axis][i], c.anchors[axis][i])
+        for x, y, rotation in c.axis_labels.values():
+            text_at(c.axis_label_text, (x, y), rotation)
 
     painter.drawRect(frame)
     return result
@@ -363,6 +260,7 @@ if __name__ == "__main__":
     else:
         view.show()
         app.exec_()
-    # The formatter imports matplotlib, but nothing here draws with it
+    # With matplotlib installed, importing the wcsaxes package imports its
+    # matplotlib API, but nothing here draws with it
     drawing = ("matplotlib.pyplot", "matplotlib.figure", "matplotlib.backends.backend_")
     assert not [name for name in sys.modules if name.startswith(drawing)]

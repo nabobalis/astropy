@@ -805,10 +805,20 @@ class CoordinateModel:
     def formatter(self):
         return self.custom_formatter or self.formatter_locator.formatter
 
-    def spec(self):
+    def spec(self, text_format="auto"):
         """
         What `~astropy.visualization.wcsaxes._layout.place_ticks` needs.
+
+        Parameters
+        ----------
+        text_format : str, optional
+            The ``format`` the formatter writes labels in, unless a custom
+            formatter is set: ``'auto'``, ``'ascii'``, ``'latex'`` or
+            ``'unicode'``.
         """
+        formatter = self.formatter
+        if text_format != "auto" and self.custom_formatter is None:
+            formatter = partial(self.formatter_locator.formatter, format=text_format)
         return CoordSpec(
             coord_index=self.coord_index,
             coord_type=self.coord_type,
@@ -816,7 +826,7 @@ class CoordinateModel:
             coord_wrap=self.coord_wrap,
             coord_scale_to_deg=self.coord_scale_to_deg,
             locator=self.locator,
-            formatter=self.formatter,
+            formatter=formatter,
             minor_locator=(
                 self.formatter_locator.minor_locator
                 if self.display_minor_ticks
@@ -836,10 +846,11 @@ class CoordinateModel:
         ----------
         value : float
             The value to format, in ``coord_unit``.
-        format : {'auto', 'ascii', 'latex'}, optional
+        format : {'auto', 'ascii', 'latex', 'unicode'}, optional
             The format to use - by default the formatting will be adjusted
             depending on whether Matplotlib is using LaTeX or MathTex. To
-            get plain ASCII strings, use format='ascii'.
+            get plain ASCII strings, use format='ascii', and for plain text
+            with Unicode symbols, format='unicode'.
         """
         if self.spacing is None:
             return ""
@@ -898,6 +909,13 @@ class AxesModel:
     frame : str
         A key of `FRAMES`, or ``'custom'`` for a frame that `layout` does
         not know how to sample.
+
+    Attributes
+    ----------
+    text_format : str
+        The format of the tick labels, the default axis labels and the cursor
+        readout of `layout`: ``'auto'`` for matplotlib, which may use
+        mathtext, or ``'unicode'`` for plain text with Unicode symbols.
     """
 
     def __init__(
@@ -908,6 +926,7 @@ class AxesModel:
         self.pixel_to_world = pixel_to_world
         self.world_to_pixel = world_to_pixel
         self.frame = frame
+        self.text_format = "auto"
 
     @classmethod
     def from_coord_meta(
@@ -1049,7 +1068,6 @@ class AxesModel:
         tick_size=0.0,
         pad=0.0,
         font_size=0.0,
-        unit_format="latex",
     ):
         """
         Lay out the ticks, tick labels, grid lines and axis labels of a view.
@@ -1078,9 +1096,6 @@ class AxesModel:
             display pixels.
         font_size : float, optional
             The font size of the axis labels in display pixels.
-        unit_format : str, optional
-            The `~astropy.units.Unit` format for the unit in a default axis
-            label.
 
         Returns
         -------
@@ -1107,9 +1122,13 @@ class AxesModel:
             [coord.coord_wrap for coord in shown],
         )
 
+        unit_format = {"unicode": "unicode", "ascii": "generic"}.get(
+            self.text_format, "latex"
+        )
+
         for coord in shown:
             coord._placed = place_ticks(
-                coord.spec(),
+                coord.spec(self.text_format),
                 ranges[coord.coord_index],
                 spines,
                 self.pixel_to_world,
@@ -1170,7 +1189,7 @@ class AxesModel:
             grid = []
             if coord.grid and self.world_to_pixel is not None:
                 grid = grid_lines(
-                    coord.spec(),
+                    coord.spec(self.text_format),
                     ranges,
                     conf.grid_samples,
                     self.pixel_to_world,

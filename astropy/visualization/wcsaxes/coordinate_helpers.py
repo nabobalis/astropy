@@ -424,10 +424,11 @@ class CoordinateHelper:
         ----------
         value : float
             The value to format.
-        format : {'auto', 'ascii', 'latex'}, optional
+        format : {'auto', 'ascii', 'latex', 'unicode'}, optional
             The format to use - by default the formatting will be adjusted
             depending on whether Matplotlib is using LaTeX or MathTex. To
-            get plain ASCII strings, use format='ascii'.
+            get plain ASCII strings, use format='ascii', and for plain text
+            with Unicode symbols, format='unicode'.
         """
         return self._model.format_coord(value, format)
 

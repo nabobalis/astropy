@@ -450,6 +450,21 @@ class AngleFormatterLocator(BaseFormatterLocator):
             return values * spacing_value * self._unit, spacing_value * self._unit
 
     def formatter(self, values, spacing, format="auto"):
+        """
+        Format the tick labels for the given values.
+
+        Parameters
+        ----------
+        values : `~astropy.units.Quantity`
+            The tick values.
+        spacing : `~astropy.units.Quantity`
+            The spacing between ticks, which sets the precision.
+        format : {'auto', 'ascii', 'latex', 'unicode'}, optional
+            ``'auto'`` uses LaTeX if matplotlib does and otherwise mathtext
+            for hour angles; ``'unicode'`` is ``'auto'`` without the
+            mathtext, with Unicode superscripts for hour angles, for toolkits
+            that do not render mathtext.
+        """
         if not isinstance(values, u.Quantity) and values is not None:
             raise TypeError("values should be a Quantities array")
 
@@ -500,18 +515,23 @@ class AngleFormatterLocator(BaseFormatterLocator):
             is_latex = format == "latex" or (
                 format == "auto" and _rcparam("text.usetex")
             )
+            is_unicode = format == "unicode"
 
             if decimal:
                 if self.show_decimal_unit:
                     sep = "fromunit"
-                    if is_latex:
-                        fmt = "latex"
+                    if is_unicode and unit is u.hourangle:
+                        # The modifier letter h of the unit itself, where the
+                        # custom unit below would give mathtext
+                        fmt = "unicode"
                     else:
-                        if unit is u.hourangle:
+                        if is_latex:
+                            fmt = "latex"
+                        elif unit is u.hourangle:
                             fmt = "unicode"
                         else:
                             fmt = "generic"
-                    unit = CUSTOM_UNITS.get(unit, unit)
+                        unit = CUSTOM_UNITS.get(unit, unit)
                 else:
                     sep = "fromunit"
                     fmt = None
@@ -531,6 +551,13 @@ class AngleFormatterLocator(BaseFormatterLocator):
                         fmt = None
                     elif is_latex:
                         fmt = "latex"
+                    elif is_unicode:
+                        sep = (
+                            "\N{MODIFIER LETTER SMALL H}",
+                            "\N{MODIFIER LETTER SMALL M}",
+                            "\N{MODIFIER LETTER SMALL S}",
+                        )
+                        fmt = None
                     else:
                         # Here we still use LaTeX but this is for Matplotlib's
                         # LaTeX engine - we can't use fmt='latex' as this

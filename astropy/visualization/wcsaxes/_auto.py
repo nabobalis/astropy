@@ -5,19 +5,22 @@ import numpy as np
 __all__ = ["auto_assign_coord_positions"]
 
 
-def auto_assign_coord_positions(ax):
+def auto_assign_coord_positions(all_coords, spine_order):
     """
-    Given a ``WCSAxes`` instance, automatically update any dynamic tick, tick
-    label and axis label positions.
+    Update any dynamic tick, tick label and axis label positions in place.
 
-    This function operates in-place on the axes and assumes that
-    ``_update_ticks`` has already been called on all the ``CoordinateHelper``
-    instances.
+    The ticks must have been placed already, since the assignment counts
+    them. Each coordinate is a `~astropy.visualization.wcsaxes.CoordinateHelper`
+    or a `~astropy.visualization.wcsaxes._model.CoordinateModel`: anything
+    with their ``get_*_position`` and ``set_*_position`` methods,
+    ``get_ticks_visible``, ``get_ticklabel_visible`` and ``tick_count``.
 
     Parameters
     ----------
-    ax : `~astropy.visualization.wcsaxes.WCSAxes`
-        The axes to update.
+    all_coords : list
+        The coordinate systems to update, each an iterable of coordinates.
+    spine_order : str
+        The spines to assign, in order of preference.
     """
     # Since ticks, tick labels and axis labels can all be auto or fixed, we need
     # a few rules to decide in what order to process things:
@@ -37,7 +40,7 @@ def auto_assign_coord_positions(ax):
     # Start off by simplifying some cases that don't require algorithmic
     # positioning. First, if tick labels are shown at fixed positions, we
     # should just adjust any auto ticks and axis labels to match.
-    for coords in ax._all_coords:
+    for coords in all_coords:
         for coord in coords:
             if "#" not in (pos := coord.get_ticklabel_position()):
                 if "#" in coord.get_ticks_position():
@@ -53,7 +56,7 @@ def auto_assign_coord_positions(ax):
 
     auto_coords = []
     already_used = []
-    for coords in ax._all_coords:
+    for coords in all_coords:
         for coord in coords:
             pos = coord.get_ticklabel_position()
             if "#" in pos:
@@ -61,7 +64,7 @@ def auto_assign_coord_positions(ax):
                 # condition below maximizes the total tick count, so a hidden
                 # coordinate with many ticks could otherwise be assigned a spine
                 # and push a visible coordinate onto one where it has no ticks.
-                if coord._ticks.get_visible() or coord._ticklabels.get_visible():
+                if coord.get_ticks_visible() or coord.get_ticklabel_visible():
                     auto_coords.append(coord)
             else:
                 already_used += list(pos)
@@ -70,8 +73,8 @@ def auto_assign_coord_positions(ax):
     if len(auto_coords) == 0:
         return
 
-    # Extract the spines for the frame
-    spines = ax.coords.frame._spine_auto_position_order
+    # The spines of the frame
+    spines = spine_order
 
     # Construct a new list of spines taking into account excluded ones
     spines = "".join(s for s in spines if s not in already_used)
@@ -102,7 +105,7 @@ def auto_assign_coord_positions(ax):
             continue
 
         # Determine the number of tick labels on each axis
-        n_on_each = {s: len(c._ticks.world[s]) for c, s in zip(auto_coords, option)}
+        n_on_each = {s: c.tick_count(s) for c, s in zip(auto_coords, option)}
 
         # Determine the total number of tick labels
         n_tick = sum(n_on_each.values())

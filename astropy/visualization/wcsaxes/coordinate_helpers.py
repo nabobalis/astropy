@@ -12,16 +12,15 @@ from matplotlib import rcParams
 from matplotlib.patches import PathPatch
 from matplotlib.path import Path
 
-from astropy import units as u
 from astropy.utils.decorators import deprecated_renamed_argument
 from astropy.utils.exceptions import AstropyDeprecationWarning
 
 # wrap_angle_at moved to _layout and is used here too. The ticks use the name
 # in _layout, so replacing coordinate_helpers.wrap_angle_at no longer changes
 # them.
-from ._layout import CoordSpec, grid_lines, label_store, place_ticks, wrap_angle_at
+from ._layout import grid_lines, label_store, place_ticks, wrap_angle_at
+from ._model import CoordinateModel
 from .axislabels import AxisLabels
-from .formatter_locator import AngleFormatterLocator, ScalarFormatterLocator
 from .frame import EllipticalFrame, RectangularFrame1D
 from .grid_paths import get_gridline_path, get_lon_lat_path
 from .ticklabels import TickLabels
@@ -89,26 +88,32 @@ class CoordinateHelper:
         frame=None,
         format_unit=None,
         default_label=None,
+        model=None,
     ):
         # Keep a reference to the parent axes and the transform
         self._parent_axes = parent_axes
         self._parent_map = parent_map
         self._transform = transform
-        self._coord_index = coord_index
-        self._coord_unit = coord_unit
-        self._format_unit = format_unit
         self._frame = frame
-        self._default_label = default_label or ""
+        # What the coordinate is and how its ticks are chosen and formatted
+        # live in the model, which other toolkits use without matplotlib.
+        if model is None:
+            model = CoordinateModel(
+                coord_index=coord_index,
+                coord_type=coord_type,
+                coord_unit=coord_unit,
+                coord_wrap=coord_wrap,
+                format_unit=format_unit,
+                default_label=default_label,
+            )
+        self._model = model
         self._auto_axislabel = True
         self._axislabel_set = False
-        self._custom_formatter = None
 
         # Disable auto label for elliptical frames as it puts labels in
         # annoying places.
         if issubclass(self.parent_axes.frame_class, EllipticalFrame):
             self._auto_axislabel = False
-
-        self.set_coord_type(coord_type, coord_wrap)
 
         # Initialize ticks
         self._ticks = Ticks(frame=self.frame, transform=parent_axes.transData)
@@ -119,8 +124,7 @@ class CoordinateHelper:
             transform=None,  # display coordinates
             figure=parent_axes.get_figure(),
         )
-        self._ticks.display_minor_ticks(rcParams["xtick.minor.visible"])
-        self._minor_frequency = 5
+        self.display_minor_ticks(rcParams["xtick.minor.visible"])
 
         # Initialize axis labels
         self._axislabels = AxisLabels(
@@ -196,7 +200,7 @@ class CoordinateHelper:
         The index of this coordinate in the
         :class:`~astropy.visualization.wcsaxes.CoordinatesMap`.
         """
-        return self._coord_index
+        return self._model.coord_index
 
     @coord_index.setter
     def coord_index(self, value):
@@ -204,14 +208,14 @@ class CoordinateHelper:
             "Setting CoordinateHelper.coord_index directly is deprecated",
             AstropyDeprecationWarning,
         )
-        self._coord_index = value
+        self._model.coord_index = value
 
     @property
     def coord_type(self):
         """
         The type of this coordinate (e.g., ``'longitude'``).
         """
-        return self._coord_type
+        return self._model.coord_type
 
     @coord_type.setter
     def coord_type(self, value):
@@ -219,14 +223,14 @@ class CoordinateHelper:
             "Setting CoordinateHelper.coord_type directly is deprecated, use CoordinateHelper.set_coord_type instead",
             AstropyDeprecationWarning,
         )
-        self._coord_type = value
+        self._model.coord_type = value
 
     @property
     def coord_unit(self):
         """
         The unit that this coordinate is in given the output of transform.
         """
-        return self._coord_unit
+        return self._model.coord_unit
 
     @coord_unit.setter
     def coord_unit(self, value):
@@ -234,14 +238,14 @@ class CoordinateHelper:
             "Setting CoordinateHelper.coord_unit directly is deprecated",
             AstropyDeprecationWarning,
         )
-        self._coord_unit = value
+        self._model.coord_unit = value
 
     @property
     def coord_wrap(self):
         """
         The angle at which the longitude wraps (defaults to 360 degrees).
         """
-        return self._coord_wrap
+        return self._model.coord_wrap
 
     @coord_wrap.setter
     def coord_wrap(self, value):
@@ -249,7 +253,7 @@ class CoordinateHelper:
             "Setting CoordinateHelper.coord_wrap directly is deprecated, use CoordinateHelper.set_coord_type instead",
             AstropyDeprecationWarning,
         )
-        self._coord_wrap = value
+        self._model.coord_wrap = value
 
     @property
     def frame(self):
@@ -271,7 +275,7 @@ class CoordinateHelper:
         """
         The axis label to show by default if none is set later.
         """
-        return self._default_label
+        return self._model.default_label
 
     @default_label.setter
     def default_label(self, value):
@@ -279,7 +283,7 @@ class CoordinateHelper:
             "Setting CoordinateHelper.default_label directly is deprecated",
             AstropyDeprecationWarning,
         )
-        self._default_label = value
+        self._model.default_label = value
 
     @property
     def ticks(self):
@@ -387,40 +391,7 @@ class CoordinateHelper:
         coord_wrap : `~astropy.units.Quantity`, optional
             The value to wrap at for angular coordinates.
         """
-        self._coord_type = coord_type
-
-        if coord_wrap is not None and not isinstance(coord_wrap, u.Quantity):
-            warnings.warn(
-                "Passing 'coord_wrap' as a number is deprecated. Use a Quantity with units convertible to angular degrees instead.",
-                AstropyDeprecationWarning,
-            )
-            coord_wrap = coord_wrap * u.deg
-
-        if coord_type == "longitude" and coord_wrap is None:
-            self._coord_wrap = 360 * u.deg
-        elif coord_type != "longitude" and coord_wrap is not None:
-            raise NotImplementedError(
-                "coord_wrap is not yet supported for non-longitude coordinates"
-            )
-        else:
-            self._coord_wrap = coord_wrap
-
-        # Initialize tick formatter/locator
-        if coord_type == "scalar":
-            self._coord_scale_to_deg = None
-            self._formatter_locator = ScalarFormatterLocator(unit=self.coord_unit)
-        elif coord_type in ["longitude", "latitude"]:
-            if self.coord_unit is u.deg:
-                self._coord_scale_to_deg = None
-            else:
-                self._coord_scale_to_deg = self.coord_unit.to(u.deg)
-            self._formatter_locator = AngleFormatterLocator(
-                unit=self.coord_unit, format_unit=self._format_unit
-            )
-        else:
-            raise ValueError(
-                "coord_type should be one of 'scalar', 'longitude', or 'latitude'"
-            )
+        self._model.set_coord_type(coord_type, coord_wrap)
 
     def set_major_formatter(self, formatter, show_decimal_unit=True):
         """
@@ -442,15 +413,7 @@ class CoordinateHelper:
             Whether to show the unit or not when using decimal formatting (e.g.,
             ``d.dd`` or ``x.xxx``).
         """
-        if callable(formatter):
-            self._custom_formatter = formatter
-        elif isinstance(formatter, str):
-            self._formatter_locator.format = formatter
-            self._custom_formatter = None
-        else:
-            raise TypeError("formatter should be a string")
-
-        self._formatter_locator.show_decimal_unit = show_decimal_unit
+        self._model.set_major_formatter(formatter, show_decimal_unit)
 
     def format_coord(self, value, format="auto"):
         """
@@ -461,32 +424,13 @@ class CoordinateHelper:
         ----------
         value : float
             The value to format.
-        format : {'auto', 'ascii', 'latex'}, optional
+        format : {'auto', 'ascii', 'latex', 'unicode'}, optional
             The format to use - by default the formatting will be adjusted
             depending on whether Matplotlib is using LaTeX or MathTex. To
-            get plain ASCII strings, use format='ascii'.
+            get plain ASCII strings, use format='ascii', and for plain text
+            with Unicode symbols, format='unicode'.
         """
-        if not hasattr(self, "_fl_spacing"):
-            return ""  # _update_ticks has not been called yet
-
-        fl = self._formatter_locator
-        if isinstance(fl, AngleFormatterLocator):
-            # Convert to degrees if needed
-            if self._coord_scale_to_deg is not None:
-                value *= self._coord_scale_to_deg
-
-            if self.coord_type == "longitude":
-                value = wrap_angle_at(value, self.coord_wrap.to_value(u.deg))
-            value = value * u.degree
-            value = value.to_value(fl._unit)
-
-        spacing = self._fl_spacing
-
-        string = self.formatter(
-            values=[value] * fl._unit, spacing=spacing, format=format
-        )
-
-        return string[0]
+        return self._model.format_coord(value, format)
 
     def set_separator(self, separator):
         """
@@ -498,12 +442,7 @@ class CoordinateHelper:
             The separator between numbers in sexagesimal representation. Can be
             either a string or a tuple (or `None` for default).
         """
-        if not (self._formatter_locator.__class__ == AngleFormatterLocator):
-            raise TypeError("Separator can only be specified for angle coordinates")
-        if isinstance(separator, (str, tuple)) or separator is None:
-            self._formatter_locator.sep = separator
-        else:
-            raise TypeError("separator should be a string, a tuple, or None")
+        self._model.set_separator(separator)
 
     def set_format_unit(self, unit, decimal=None, show_decimal_unit=True):
         """
@@ -520,15 +459,13 @@ class CoordinateHelper:
         show_decimal_unit : bool, optional
             Whether to include units when in decimal mode.
         """
-        self._formatter_locator.format_unit = u.Unit(unit)
-        self._formatter_locator.decimal = decimal
-        self._formatter_locator.show_decimal_unit = show_decimal_unit
+        self._model.set_format_unit(unit, decimal, show_decimal_unit)
 
     def get_format_unit(self):
         """
         Get the unit for the major tick labels.
         """
-        return self._formatter_locator.format_unit
+        return self._model.get_format_unit()
 
     def set_ticks(
         self,
@@ -574,17 +511,7 @@ class CoordinateHelper:
                 `~astropy.visualization.wcsaxes.CoordinateHelper.set_ticklabel`
                 instead.
         """
-        if sum([values is None, spacing is None, number is None]) < 2:
-            raise ValueError(
-                "At most one of values, spacing, or number should be specified"
-            )
-
-        if values is not None:
-            self._formatter_locator.values = values
-        elif spacing is not None:
-            self._formatter_locator.spacing = spacing
-        elif number is not None:
-            self._formatter_locator.number = number
+        self._model.set_ticks(values=values, spacing=spacing, number=number)
 
         if size is not None:
             self._ticks.set_ticksize(size)
@@ -664,6 +591,12 @@ class CoordinateHelper:
             axis: np.array(pixel.get(axis, []), dtype=float).reshape(-1, 2)
             for axis in self.frame
         }
+
+    def tick_count(self, spine):
+        """
+        The number of major ticks placed on a spine by the last tick update.
+        """
+        return len(self._ticks.world.get(spine, []))
 
     def get_ticklabels(self):
         """
@@ -856,12 +789,7 @@ class CoordinateHelper:
         return self._auto_axislabel
 
     def _get_default_axislabel(self):
-        unit = self.get_format_unit() or self.coord_unit
-
-        if not unit or unit is u.one or self.coord_type in ("longitude", "latitude"):
-            return f"{self.default_label}"
-        else:
-            return f"{self.default_label} [{unit:latex}]"
+        return self._model.default_axislabel()
 
     def set_axislabel_position(self, position):
         """
@@ -955,11 +883,16 @@ class CoordinateHelper:
 
     @property
     def locator(self):
-        return self._formatter_locator.locator
+        return self._model.locator
 
     @property
     def formatter(self):
-        return self._custom_formatter or self._formatter_locator.formatter
+        return self._model.formatter
+
+    @property
+    def _formatter_locator(self):
+        # The model owns it; kept for code that reaches in.
+        return self._model.formatter_locator
 
     def _draw_grid(self, renderer):
         renderer.open_group("grid lines")
@@ -1027,21 +960,7 @@ class CoordinateHelper:
         renderer.close_group("axis labels")
 
     def _layout_spec(self):
-        return CoordSpec(
-            coord_index=self.coord_index,
-            coord_type=self.coord_type,
-            coord_unit=self.coord_unit,
-            coord_wrap=self.coord_wrap,
-            coord_scale_to_deg=self._coord_scale_to_deg,
-            locator=self.locator,
-            formatter=self.formatter,
-            minor_locator=(
-                self._formatter_locator.minor_locator
-                if self._ticks.get_display_minor_ticks()
-                else None
-            ),
-            minor_frequency=self.get_minor_frequency(),
-        )
+        return self._model.spec()
 
     def _update_ticks(self):
         if self.coord_index is None:
@@ -1070,7 +989,7 @@ class CoordinateHelper:
             origin=self.frame.origin,
             frame_1d=isinstance(self.frame, RectangularFrame1D),
         )
-        self._fl_spacing = placed.spacing
+        self._model.spacing = placed.spacing
         self._lbl_world = placed.label_world
 
         major = placed.major
@@ -1130,9 +1049,10 @@ class CoordinateHelper:
             Whether or not to display minor ticks.
         """
         self._ticks.display_minor_ticks(display_minor_ticks)
+        self._model.display_minor_ticks = display_minor_ticks
 
     def get_minor_frequency(self):
-        return self._minor_frequency
+        return self._model.minor_frequency
 
     def set_minor_frequency(self, frequency):
         """
@@ -1143,7 +1063,7 @@ class CoordinateHelper:
         frequency : int
             The number of minor ticks per major ticks.
         """
-        self._minor_frequency = frequency
+        self._model.minor_frequency = frequency
 
     def _update_grid_lines_1d(self):
         if self.coord_index is None:

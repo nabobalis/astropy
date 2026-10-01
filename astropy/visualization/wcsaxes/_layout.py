@@ -54,10 +54,12 @@ __all__ = [
     "anchor_tick_labels",
     "axis_label_position",
     "count_overlaps",
+    "elliptical_spines",
     "grid_lines",
     "keep_tick_labels",
     "label_store",
     "place_ticks",
+    "rectangular_1d_spines",
     "rectangular_spines",
     "resample_spine",
     "simplify_labels",
@@ -182,6 +184,18 @@ class SpineArrays(NamedTuple):
     normal_angle: np.ndarray
 
 
+def _sample_spines(outlines, n_samples, pixel_to_world, to_display, x_only=False):
+    # Resample each outline, convert it to world coordinates and take its
+    # normals, as BaseFrame.sample does. A 1-D frame converts x alone.
+    spines = {}
+    for axis, outline in outlines.items():
+        data = resample_spine(np.array(outline, dtype=float), n_samples)
+        with np.errstate(invalid="ignore"):
+            world = pixel_to_world(data[:, :1] if x_only else data)
+        spines[axis] = SpineArrays(data, world, spine_normal_angle(to_display(data)))
+    return spines
+
+
 def rectangular_spines(xlim, ylim, n_samples, pixel_to_world, to_display):
     """
     Sample the four spines of a rectangular frame.
@@ -215,13 +229,79 @@ def rectangular_spines(xlim, ylim, n_samples, pixel_to_world, to_display):
         "t": [[x1, y1], [x0, y1]],
         "l": [[x0, y1], [x0, y0]],
     }
-    spines = {}
-    for axis, outline in outlines.items():
-        data = resample_spine(np.array(outline, dtype=float), n_samples)
-        with np.errstate(invalid="ignore"):
-            world = pixel_to_world(data)
-        spines[axis] = SpineArrays(data, world, spine_normal_angle(to_display(data)))
-    return spines
+    return _sample_spines(outlines, n_samples, pixel_to_world, to_display)
+
+
+def rectangular_1d_spines(xlim, ylim, n_samples, pixel_to_world, to_display):
+    """
+    Sample the two spines of a rectangular frame for a 1-D WCS.
+
+    The spines are those of
+    `~astropy.visualization.wcsaxes.frame.RectangularFrame1D`: ``'b'`` and
+    ``'t'``. Only x is a WCS pixel coordinate, so ``pixel_to_world`` is given
+    an (N, 1) array. `place_ticks` reads the result with ``frame_1d=True``.
+
+    Parameters
+    ----------
+    xlim, ylim : tuple
+        The ``(min, max)`` limits of the frame in data pixels.
+    n_samples : int
+        The number of sample points along each spine.
+    pixel_to_world : callable
+        Converts an (N, 1) array of data pixels to an (N, n_world) array of
+        world values.
+    to_display : callable
+        Converts an (N, 2) array of data pixels to display pixels.
+
+    Returns
+    -------
+    dict
+        Maps each spine name to a `SpineArrays`, as `place_ticks` reads them.
+    """
+    (x0, x1), (y0, y1) = xlim, ylim
+    outlines = {"b": [[x0, y0], [x1, y0]], "t": [[x1, y1], [x0, y1]]}
+    return _sample_spines(outlines, n_samples, pixel_to_world, to_display, x_only=True)
+
+
+def elliptical_spines(xlim, ylim, n_samples, pixel_to_world, to_display):
+    """
+    Sample the three spines of an elliptical frame.
+
+    The spines are those of
+    `~astropy.visualization.wcsaxes.frame.EllipticalFrame`: ``'c'``, the
+    ellipse inscribed in the limits, ``'h'``, its horizontal axis, and
+    ``'v'``, its vertical axis.
+
+    Parameters
+    ----------
+    xlim, ylim : tuple
+        The ``(min, max)`` limits of the frame in data pixels.
+    n_samples : int
+        The number of sample points along each spine.
+    pixel_to_world : callable
+        Converts an (N, 2) array of data pixels to an (N, n_world) array of
+        world values.
+    to_display : callable
+        Converts an (N, 2) array of data pixels to display pixels.
+
+    Returns
+    -------
+    dict
+        Maps each spine name to a `SpineArrays`, as `place_ticks` reads them.
+    """
+    (xmin, xmax), (ymin, ymax) = xlim, ylim
+    xmid = 0.5 * (xmax + xmin)
+    ymid = 0.5 * (ymax + ymin)
+    dx = xmid - xmin
+    dy = ymid - ymin
+    # The outlines of EllipticalFrame.update_spines, before resampling
+    theta = np.linspace(0.0, 2 * np.pi, 1000)
+    outlines = {
+        "c": np.array([xmid + dx * np.cos(theta), ymid + dy * np.sin(theta)]).T,
+        "h": np.array([np.linspace(xmin, xmax, 1000), np.repeat(ymid, 1000)]).T,
+        "v": np.array([np.repeat(xmid, 1000), np.linspace(ymin, ymax, 1000)]).T,
+    }
+    return _sample_spines(outlines, n_samples, pixel_to_world, to_display)
 
 
 @dataclass(frozen=True, kw_only=True)

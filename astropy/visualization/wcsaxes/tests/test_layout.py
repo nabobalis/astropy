@@ -13,9 +13,11 @@ cannot be imported.
 
 import subprocess
 import sys
+from functools import partial
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 from numpy.testing import assert_allclose, assert_array_equal
 
 from astropy import units as u
@@ -26,12 +28,14 @@ from astropy.visualization.wcsaxes._layout import (
     anchor_tick_labels,
     axis_label_position,
     count_overlaps,
+    elliptical_spines,
     grid_lines,
     gridline_path_codes,
     keep_tick_labels,
     label_store,
     lon_lat_path_codes,
     place_ticks,
+    rectangular_1d_spines,
     rectangular_spines,
     resample_spine,
     simplify_labels,
@@ -39,19 +43,9 @@ from astropy.visualization.wcsaxes._layout import (
     spine_midpoint,
     spine_normal_angle,
 )
+from astropy.visualization.wcsaxes._model import wcs_pixel_to_world, wcs_world_to_pixel
 from astropy.visualization.wcsaxes.coordinate_range import find_coordinate_range
 from astropy.wcs import WCS
-
-
-class PixelToWorld:
-    def __init__(self, wcs):
-        self.wcs = wcs
-
-    def transform(self, pixel):
-        return np.array(self.wcs.pixel_to_world_values(*pixel.T)).T
-
-    def world_to_pixel(self, world):
-        return np.array(self.wcs.world_to_pixel_values(*world.T)).T
 
 
 def to_display(xy):
@@ -100,9 +94,10 @@ def layout(ctype, crval, cdelt, shape, spacing, rectangular):
     wcs.wcs.crval = crval
     wcs.wcs.cdelt = cdelt
     wcs.wcs.crpix = [(shape[0] + 1) / 2, (shape[1] + 1) / 2]
-    p2w = PixelToWorld(wcs)
+    p2w = partial(wcs_pixel_to_world, wcs)
+    w2p = partial(wcs_world_to_pixel, wcs)
     x0, x1, y0, y1 = -0.5, shape[0] - 0.5, -0.5, shape[1] - 0.5
-    spines = rectangular_spines((x0, x1), (y0, y1), 100, p2w.transform, to_display)
+    spines = rectangular_spines((x0, x1), (y0, y1), 100, p2w, to_display)
     types = ["longitude", "latitude"]
     wraps = [360 * u.deg, None]
     ranges = find_coordinate_range(p2w, [x0, x1, y0, y1], types, [u.deg] * 2, wraps)
@@ -120,10 +115,8 @@ def layout(ctype, crval, cdelt, shape, spacing, rectangular):
             minor_locator=minor_locator,
             minor_frequency=2,
         )
-        placed = place_ticks(
-            spec, ranges[i], spines, p2w.transform, to_display, from_display
-        )
-        lines = grid_lines(spec, ranges, 50, p2w.transform, p2w.world_to_pixel)
+        placed = place_ticks(spec, ranges[i], spines, p2w, to_display, from_display)
+        lines = grid_lines(spec, ranges, 50, p2w, w2p)
 
         labels = label_store(placed)
         sort_labels(labels)
@@ -285,26 +278,37 @@ def test_layout_spec():
     assert spec.minor_locator is None
 
 
-def test_rectangular_spines():
-    # The same spines as RectangularFrame.sample gives WCSAxes
+@pytest.mark.parametrize(
+    "naxis, frame_class, spines_function, names",
+    [
+        (2, None, rectangular_spines, "brtl"),
+        (1, None, rectangular_1d_spines, "bt"),
+        (2, "EllipticalFrame", elliptical_spines, "chv"),
+    ],
+)
+def test_frame_spines(naxis, frame_class, spines_function, names):
+    # The same spines as the frame's sample() gives WCSAxes
     from matplotlib.figure import Figure
 
-    wcs = WCS(naxis=2)
-    wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
-    wcs.wcs.cdelt = [-0.01, 0.01]
-    ax = Figure().add_subplot(projection=wcs)
+    from astropy.visualization.wcsaxes.frame import EllipticalFrame
+
+    wcs = WCS(naxis=naxis)
+    wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"][:naxis] if naxis == 2 else ["FREQ"]
+    wcs.wcs.cdelt = [-0.01, 0.01][:naxis]
+    kwargs = {"frame_class": EllipticalFrame} if frame_class else {}
+    ax = Figure().add_subplot(projection=wcs, **kwargs)
     ax.set_xlim(-0.5, 99.5)
     ax.set_ylim(-0.5, 49.5)
     frame = ax.coords.frame
     expected = frame.sample(20)
-    spines = rectangular_spines(
+    spines = spines_function(
         ax.get_xlim(),
         ax.get_ylim(),
         20,
         frame.transform.transform,
         ax.transData.transform,
     )
-    assert list(spines) == list(expected) == ["b", "r", "t", "l"]
+    assert list(spines) == list(expected) == list(names)
     for axis in spines:
         assert_array_equal(spines[axis].data, expected[axis].data)
         assert_array_equal(spines[axis].world, expected[axis].world)

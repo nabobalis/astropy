@@ -1,17 +1,18 @@
 # Licensed under a 3-clause BSD style license - see LICENSE.rst
 """
-Tick geometry for WCSAxes that does not depend on matplotlib.
+Tick and grid geometry for WCSAxes that does not depend on matplotlib.
 
 This private module works out where the ticks of a coordinate cross the
-spines of a frame, and in which direction they point. It imports only numpy
-and astropy. The world coordinate transform, the display transform, the
-locator and the formatter all come in as callables, so a toolkit other than
-matplotlib can draw the same ticks as WCSAxes.
+spines of a frame, in which direction they point, and where its grid lines
+run. It imports only numpy and astropy. The world coordinate transform, the
+display transform, the locator and the formatter all come in as callables,
+so a toolkit other than matplotlib can draw the same ticks and grid lines as
+WCSAxes.
 
 Conventions:
 
-* Data pixels are the image pixels of the axes. Spines and tick positions
-  are in data pixels.
+* Data pixels are the image pixels of the axes. Spines, tick positions and
+  grid lines are in data pixels.
 * Display pixels have their origin at the lower left, y pointing up and one
   unit per device pixel, as in matplotlib. Every angle is in display space,
   in degrees, counter-clockwise from +x.
@@ -23,17 +24,36 @@ from typing import NamedTuple
 import numpy as np
 
 from astropy import units as u
+from astropy.coordinates import angular_separation
 
 __all__ = [
+    "DISCONT_FACTOR",
+    "LINETO",
+    "MOVETO",
+    "ROUND_TRIP_RTOL",
     "CoordSpec",
     "PlacedTicks",
     "SpineArrays",
     "TickTable",
+    "grid_lines",
+    "gridline_path_codes",
+    "lon_lat_path_codes",
     "place_ticks",
     "resample_spine",
     "spine_normal_angle",
     "wrap_angle_at",
 ]
+
+# The codes of the vertices of a grid line, equal to those of
+# matplotlib.path.Path. A line breaks at each MOVETO.
+MOVETO = 1
+LINETO = 2
+
+# Tolerance for WCS round-tripping, relative to the scale size
+ROUND_TRIP_RTOL = 1.0
+
+# Tolerance for discontinuities relative to the median
+DISCONT_FACTOR = 10.0
 
 
 def wrap_angle_at(values, coord_wrap):
@@ -493,3 +513,205 @@ def _tick_table(rows):
         np.array(normal, dtype=float),
         np.array(disp, dtype=float),
     )
+
+
+def grid_lines(spec, coord_ranges, n_samples, pixel_to_world, world_to_pixel):
+    """
+    Sample the grid lines of one coordinate.
+
+    Parameters
+    ----------
+    spec : `CoordSpec`
+        The coordinate. Only its index, type, unit and locator are used.
+    coord_ranges : list
+        The ``(vmin, vmax)`` range of each of the two coordinates. The range
+        of this coordinate is given to the locator, and each grid line spans
+        the range of the other one.
+    n_samples : int
+        The number of points along each grid line.
+    pixel_to_world : callable
+        Converts an (N, 2) array of data pixels to an (N, 2) array of world
+        values.
+    world_to_pixel : callable
+        Converts an (N, 2) array of world values to data pixels.
+
+    Returns
+    -------
+    list of tuple or None
+        One ``(pixel, codes)`` pair per tick value, where ``pixel`` is an
+        (n_samples, 2) array of data pixels and ``codes`` holds the `MOVETO`
+        or `LINETO` code of each vertex. None if the locator finds no ticks.
+    """
+    # For 3-d WCS with a correlated third axis, the *proper* way of
+    # drawing a grid should be to find the world coordinates of all pixels
+    # and drawing contours. What we are doing here assumes that we can
+    # define the grid lines with just two of the coordinates (and
+    # therefore assumes that the other coordinates are fixed and set to
+    # the value in the slice). Here we basically assume that if the WCS
+    # had a third axis, it has been abstracted away in the transformation.
+
+    tick_world_coordinates, spacing = spec.locator(*coord_ranges[spec.coord_index])
+    tick_world_coordinates_values = tick_world_coordinates.to_value(spec.coord_unit)
+
+    n_coord = len(tick_world_coordinates_values)
+    if n_coord == 0:
+        return None
+
+    xy_world = np.zeros((n_samples * n_coord, 2))
+
+    lines = []
+
+    for iw, w in enumerate(tick_world_coordinates_values):
+        subset = slice(iw * n_samples, (iw + 1) * n_samples)
+        if spec.coord_index == 0:
+            xy_world[subset, 0] = np.repeat(w, n_samples)
+            xy_world[subset, 1] = np.linspace(
+                coord_ranges[1][0], coord_ranges[1][1], n_samples
+            )
+        else:
+            xy_world[subset, 0] = np.linspace(
+                coord_ranges[0][0], coord_ranges[0][1], n_samples
+            )
+            xy_world[subset, 1] = np.repeat(w, n_samples)
+
+    # We now convert all the world coordinates to pixel coordinates in a
+    # single go rather than doing this in the gridline to path conversion
+    # to fully benefit from vectorized coordinate transformations.
+
+    # Transform line to pixel coordinates
+    pixel = world_to_pixel(xy_world)
+
+    # Create round-tripped values for checking
+    xy_world_round = pixel_to_world(pixel)
+
+    for iw in range(n_coord):
+        subset = slice(iw * n_samples, (iw + 1) * n_samples)
+        lines.append(
+            _gridline(spec, xy_world[subset], pixel[subset], xy_world_round[subset])
+        )
+
+    return lines
+
+
+def _gridline(spec, xy_world, pixel, xy_world_round):
+    if spec.coord_type == "scalar":
+        return pixel, gridline_path_codes(xy_world, pixel)
+    else:
+        return pixel, lon_lat_path_codes(xy_world, pixel, xy_world_round)
+
+
+def lon_lat_path_codes(lon_lat, pixel, lon_lat_check):
+    """
+    Find the path codes of a curve, taking into account discontinuities.
+
+    Parameters
+    ----------
+    lon_lat : ndarray
+        The longitude and latitude values along the curve, given as a (n,2)
+        array.
+    pixel : ndarray
+        The pixel coordinates corresponding to ``lon_lat``.
+    lon_lat_check : ndarray
+        The world coordinates derived from converting from ``pixel``, which is
+        used to ensure round-tripping.
+
+    Returns
+    -------
+    ndarray
+        The uint8 code of each vertex: `MOVETO` where the curve starts or
+        resumes, `LINETO` elsewhere.
+    """
+    # In some spherical projections, some parts of the curve are 'behind' or
+    # 'in front of' the plane of the image, so we find those by reversing the
+    # transformation and finding points where the result is not consistent.
+
+    sep = angular_separation(
+        np.radians(lon_lat[:, 0]),
+        np.radians(lon_lat[:, 1]),
+        np.radians(lon_lat_check[:, 0]),
+        np.radians(lon_lat_check[:, 1]),
+    )
+
+    # Define the relevant scale size using the separation between the first two points
+    scale_size = angular_separation(
+        *np.radians(lon_lat[0, :]), *np.radians(lon_lat[1, :])
+    )
+
+    with np.errstate(invalid="ignore"):
+        sep[sep > np.pi] -= 2.0 * np.pi
+
+        mask = sep > ROUND_TRIP_RTOL * scale_size
+
+    # Mask values with invalid pixel positions
+    mask = mask | np.isnan(pixel[:, 0]) | np.isnan(pixel[:, 1])
+
+    # We can now start to set up the codes for the Path.
+    codes = np.zeros(lon_lat.shape[0], dtype=np.uint8)
+    codes[:] = LINETO
+    codes[0] = MOVETO
+    codes[mask] = MOVETO
+
+    # Also need to move to point *after* a hidden value
+    codes[1:][mask[:-1]] = MOVETO
+
+    # We now go through and search for discontinuities in the curve that would
+    # be due to the curve going outside the field of view, invalid WCS values,
+    # or due to discontinuities in the projection.
+
+    # We start off by pre-computing the step in pixel coordinates from one
+    # point to the next. The idea is to look for large jumps that might indicate
+    # discontinuities.
+    step = np.sqrt(
+        (pixel[1:, 0] - pixel[:-1, 0]) ** 2 + (pixel[1:, 1] - pixel[:-1, 1]) ** 2
+    )
+
+    # We search for discontinuities by looking for places where the step
+    # is larger by more than a given factor compared to the median
+    # discontinuous = step > DISCONT_FACTOR * np.median(step)
+    discontinuous = step[1:] > DISCONT_FACTOR * step[:-1]
+
+    # Skip over discontinuities
+    codes[2:][discontinuous] = MOVETO
+
+    # The above missed the first step, so check that too
+    if len(step) >= 2 and step[0] > DISCONT_FACTOR * step[1]:
+        codes[1] = MOVETO
+
+    return codes
+
+
+def gridline_path_codes(world, pixel):
+    """
+    Find the path codes of a grid line.
+
+    Parameters
+    ----------
+    world : ndarray
+        The longitude and latitude values along the curve, given as a (n,2)
+        array.
+    pixel : ndarray
+        The pixel coordinates corresponding to ``lon_lat``.
+
+    Returns
+    -------
+    ndarray
+        The uint8 code of each vertex: `MOVETO` where the line starts or
+        resumes after an invalid pixel, `LINETO` elsewhere.
+    """
+    # Mask values with invalid pixel positions
+    mask = np.isnan(pixel[:, 0]) | np.isnan(pixel[:, 1])
+
+    # We can now start to set up the codes for the Path.
+    codes = np.zeros(world.shape[0], dtype=np.uint8)
+    codes[:] = LINETO
+    codes[0] = MOVETO
+    codes[mask] = MOVETO
+
+    # Also need to move to point *after* a hidden value
+    codes[1:][mask[:-1]] = MOVETO
+
+    # We now go through and search for discontinuities in the curve that would
+    # be due to the curve going outside the field of view, invalid WCS values,
+    # or due to discontinuities in the projection.
+
+    return codes

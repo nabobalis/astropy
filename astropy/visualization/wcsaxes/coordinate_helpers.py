@@ -16,7 +16,7 @@ from astropy import units as u
 from astropy.utils.decorators import deprecated_renamed_argument
 from astropy.utils.exceptions import AstropyDeprecationWarning
 
-from ._layout import CoordSpec, place_ticks, wrap_angle_at
+from ._layout import CoordSpec, grid_lines, place_ticks, wrap_angle_at
 from .axislabels import AxisLabels
 from .formatter_locator import AngleFormatterLocator, ScalarFormatterLocator
 from .frame import EllipticalFrame, RectangularFrame1D
@@ -1106,64 +1106,21 @@ class CoordinateHelper:
             self._grid_lines.append(Path(pixel))
 
     def _update_grid_lines(self):
-        # For 3-d WCS with a correlated third axis, the *proper* way of
-        # drawing a grid should be to find the world coordinates of all pixels
-        # and drawing contours. What we are doing here assumes that we can
-        # define the grid lines with just two of the coordinates (and
-        # therefore assumes that the other coordinates are fixed and set to
-        # the value in the slice). Here we basically assume that if the WCS
-        # had a third axis, it has been abstracted away in the transformation.
-
         if self.coord_index is None:
-            return
-
-        coord_range = self.parent_map._coord_range
-
-        tick_world_coordinates, spacing = self.locator(*coord_range[self.coord_index])
-        tick_world_coordinates_values = tick_world_coordinates.to_value(self.coord_unit)
-
-        n_coord = len(tick_world_coordinates_values)
-        if n_coord == 0:
             return
 
         from . import conf
 
-        n_samples = conf.grid_samples
-
-        xy_world = np.zeros((n_samples * n_coord, 2))
-
-        self._grid_lines = []
-
-        for iw, w in enumerate(tick_world_coordinates_values):
-            subset = slice(iw * n_samples, (iw + 1) * n_samples)
-            if self.coord_index == 0:
-                xy_world[subset, 0] = np.repeat(w, n_samples)
-                xy_world[subset, 1] = np.linspace(
-                    coord_range[1][0], coord_range[1][1], n_samples
-                )
-            else:
-                xy_world[subset, 0] = np.linspace(
-                    coord_range[0][0], coord_range[0][1], n_samples
-                )
-                xy_world[subset, 1] = np.repeat(w, n_samples)
-
-        # We now convert all the world coordinates to pixel coordinates in a
-        # single go rather than doing this in the gridline to path conversion
-        # to fully benefit from vectorized coordinate transformations.
-
-        # Transform line to pixel coordinates
-        pixel = self.transform.inverted().transform(xy_world)
-
-        # Create round-tripped values for checking
-        xy_world_round = self.transform.transform(pixel)
-
-        for iw in range(n_coord):
-            subset = slice(iw * n_samples, (iw + 1) * n_samples)
-            self._grid_lines.append(
-                self._get_gridline(
-                    xy_world[subset], pixel[subset], xy_world_round[subset]
-                )
-            )
+        lines = grid_lines(
+            self._layout_spec(),
+            self.parent_map._coord_range,
+            conf.grid_samples,
+            self.transform.transform,
+            self.transform.inverted().transform,
+        )
+        # Without ticks there are no grid lines, and the previous ones stay.
+        if lines is not None:
+            self._grid_lines = [Path(pixel, codes=codes) for pixel, codes in lines]
 
     def add_tickable_gridline(self, name, constant):
         """
@@ -1204,7 +1161,7 @@ class CoordinateHelper:
 
         n_samples = conf.grid_samples
 
-        # See comment in _update_grid_lines() about a WCS with more than 2 axes
+        # See comment in _layout.grid_lines() about a WCS with more than 2 axes
 
         xy_world = np.zeros((n_samples, 2))
         xy_world[:, self.coord_index] = np.repeat(constant, n_samples)

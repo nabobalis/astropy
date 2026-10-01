@@ -1,22 +1,29 @@
 # Licensed under a 3-clause BSD style license - see LICENSE.rst
 """
-Tests for the tick placement in ``wcsaxes._layout``, which does not need
-matplotlib.
+Tests for the tick and grid geometry in ``wcsaxes._layout``, which does not
+need matplotlib.
 """
 
 import json
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import numpy as np
+import pytest
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
+from matplotlib.path import Path
 from numpy.testing import assert_allclose, assert_array_equal
 
 from astropy.visualization.wcsaxes import conf
 from astropy.visualization.wcsaxes._layout import (
+    LINETO,
+    MOVETO,
     CoordSpec,
     SpineArrays,
+    grid_lines,
+    gridline_path_codes,
     place_ticks,
     resample_spine,
     spine_normal_angle,
@@ -25,9 +32,10 @@ from astropy.visualization.wcsaxes.coordinate_range import find_coordinate_range
 from astropy.wcs import WCS
 
 # Runs in a subprocess in which matplotlib cannot be imported. It places the
-# ticks of a TAN image, and of an all-sky AIT image whose corners are off the
-# sky, from plain numpy inputs: 100 samples per spine, a display transform of
-# 2 * data + 10, and a locator and a formatter that are plain functions.
+# ticks and samples the grid lines of a TAN image, and of an all-sky AIT image
+# whose corners are off the sky, from plain numpy inputs: 100 samples per
+# spine, 50 per grid line, a display transform of 2 * data + 10, and a locator
+# and a formatter that are plain functions.
 NO_MATPLOTLIB = """
 import json
 import sys
@@ -38,8 +46,10 @@ import numpy as np
 
 from astropy import units as u
 from astropy.visualization.wcsaxes._layout import (
+    MOVETO,
     CoordSpec,
     SpineArrays,
+    grid_lines,
     place_ticks,
     resample_spine,
     spine_normal_angle,
@@ -54,6 +64,9 @@ class PixelToWorld:
 
     def transform(self, pixel):
         return np.array(self.wcs.pixel_to_world_values(*pixel.T)).T
+
+    def world_to_pixel(self, world):
+        return np.array(self.wcs.world_to_pixel_values(*world.T)).T
 
 
 def to_display(xy):
@@ -80,7 +93,7 @@ def formatter(values, spacing):
     return [f"{v:g}" for v in values.to_value(u.deg)]
 
 
-def ticks(ctype, crval, cdelt, shape, spacing):
+def layout(ctype, crval, cdelt, shape, spacing):
     wcs = WCS(naxis=2)
     wcs.wcs.ctype = ctype
     wcs.wcs.crval = crval
@@ -119,6 +132,7 @@ def ticks(ctype, crval, cdelt, shape, spacing):
         placed = place_ticks(
             spec, ranges[i], spines, p2w.transform, to_display, from_display
         )
+        lines = grid_lines(spec, ranges, 50, p2w.transform, p2w.world_to_pixel)
         result.append(
             {
                 "axis": "".join(placed.major.axis),
@@ -127,17 +141,24 @@ def ticks(ctype, crval, cdelt, shape, spacing):
                 "angle": placed.major.angle.tolist(),
                 "text": list(placed.text),
                 "minor": "".join(placed.minor.axis),
+                "grid_moveto": [
+                    np.flatnonzero(codes == MOVETO).tolist() for _, codes in lines
+                ],
+                "grid_pixel": [
+                    pixel[[0, 25, -1]].ravel().tolist() for pixel, _ in lines
+                ],
             }
         )
     return result
 
 
-tan = ticks(["RA---TAN", "DEC--TAN"], [266.4, -28.9], [-0.002, 0.002], (100, 80), [0.05, 0.05])
-ait = ticks(["GLON-AIT", "GLAT-AIT"], [0, 0], [-1, 1], (300, 150), [60, 30])
+tan = layout(["RA---TAN", "DEC--TAN"], [266.4, -28.9], [-0.002, 0.002], (100, 80), [0.05, 0.05])
+ait = layout(["GLON-AIT", "GLAT-AIT"], [0, 0], [-1, 1], (300, 150), [60, 50])
 print(json.dumps({"tan": tan, "ait": ait}))
 """
 
-# The output of NO_MATPLOTLIB, rounded to 6 decimals.
+# The output of NO_MATPLOTLIB, rounded to 6 decimals. For each grid line it
+# gives the indices of the MOVETO codes, and the first, middle and last vertex.
 EXPECTED = {
     "tan": [
         {
@@ -169,6 +190,14 @@ EXPECTED = {
             ],
             "text": ["266.3", "266.35", "266.4", "266.45", "266.5"] * 2,
             "minor": "b" * 9 + "t" * 9,
+            "grid_moveto": [[0]] * 5,
+            "grid_pixel": [
+                [93.232766, -8.520914, 93.274092, 40.473429, 93.313765, 87.508],
+                [71.366372, -8.507039, 71.387035, 40.487274, 71.406872, 87.521816],
+                [49.5, -8.502414, 49.5, 40.491889, 49.5, 87.526422],
+                [27.633628, -8.507039, 27.612965, 40.487274, 27.593128, 87.521816],
+                [5.767234, -8.520914, 5.725908, 40.473429, 5.686235, 87.508],
+            ],
         },
         {
             "axis": "rrrlll",
@@ -191,6 +220,12 @@ EXPECTED = {
             ],
             "text": ["-28.95", "-28.9", "-28.85"] * 2,
             "minor": "r" * 7 + "l" * 7,
+            "grid_moveto": [[0]] * 3,
+            "grid_pixel": [
+                [109.517351, 14.465217, 48.275158, 14.499979, -10.517351, 14.465217],
+                [109.546277, 39.465261, 48.274567, 39.499986, -10.546277, 39.465261],
+                [109.575204, 64.465306, 48.273977, 64.499992, -10.575204, 64.465306],
+            ],
         },
     ],
     "ait": [
@@ -225,6 +260,15 @@ EXPECTED = {
             ],
             "text": ["60", "120", "240", "300", "0"] * 2,
             "minor": "b" * 11 + "t" * 11,
+            "grid_moveto": [[0]] * 6,
+            "grid_pixel": [
+                [149.5, -6.528468, 149.5, 76.336656, 149.5, 155.528468],
+                [149.5, -6.528468, 90.206451, 76.401429, 149.5, 155.528468],
+                [149.5, -6.528468, 34.957507, 76.620697, 149.5, 155.528468],
+                [149.5, -6.528468, -12.473675, 77.09709, 149.5, 155.528468],
+                [149.5, -6.528468, 264.042493, 76.620697, 149.5, 155.528468],
+                [149.5, -6.528468, 208.793549, 76.401429, 149.5, 155.528468],
+            ],
         },
         {
             "axis": "rl",
@@ -232,13 +276,23 @@ EXPECTED = {
             "pixel": [[299.5, 74.5], [-0.5, 74.5]],
             "angle": [180.000019, -1.8e-05],
             "text": ["0", "0"],
-            "minor": "bbrrrttlll",
+            "minor": "bbrttl",
+            # Each latitude line breaks where it crosses the longitude seam,
+            # between samples 24 and 25. The spacing of 50 degrees keeps the
+            # lines off the poles, where the round-trip check depends on
+            # rounding.
+            "grid_moveto": [[0, 25]] * 3,
+            "grid_pixel": [
+                [149.5, 26.071515, 252.55846, 13.058287, 149.5, 26.071515],
+                [149.5, 74.5, 308.938696, 74.5, 149.5, 74.5],
+                [149.5, 122.928485, 252.55846, 135.941713, 149.5, 122.928485],
+            ],
         },
     ],
 }
 
 
-def test_place_ticks_without_matplotlib():
+def test_layout_without_matplotlib():
     proc = subprocess.run(
         [sys.executable, "-c", NO_MATPLOTLIB],
         capture_output=True,
@@ -255,6 +309,24 @@ def test_place_ticks_without_matplotlib():
             assert_allclose(actual["angle"], expected["angle"], rtol=0, atol=1e-6)
             assert actual["text"] == expected["text"]
             assert actual["minor"] == expected["minor"]
+            assert actual["grid_moveto"] == expected["grid_moveto"]
+            assert_allclose(
+                actual["grid_pixel"], expected["grid_pixel"], rtol=0, atol=1e-6
+            )
+
+
+def test_path_codes_match_matplotlib():
+    assert MOVETO == Path.MOVETO
+    assert LINETO == Path.LINETO
+
+
+def test_gridline_path_codes():
+    # A line breaks at an invalid pixel and resumes at the next one.
+    pixel = np.array([[0, 0], [1, 1], [np.nan, 2], [3, 3], [4, 4]], dtype=float)
+    assert_array_equal(
+        gridline_path_codes(np.zeros((5, 2)), pixel),
+        [MOVETO, LINETO, MOVETO, MOVETO, LINETO],
+    )
 
 
 def test_place_ticks_matches_wcsaxes():
@@ -345,3 +417,66 @@ def test_place_ticks_matches_wcsaxes():
         assert flat(coord._ticklabels.text) == list(placed.text)
         assert_allclose(flat(coord._ticks.angle), major.angle, rtol=0, atol=1e-9)
         assert_allclose(flat(coord._ticklabels.angle), major.normal, rtol=0, atol=1e-9)
+
+
+@pytest.mark.parametrize(
+    ("ctype", "cunit"),
+    [(["HPLN-TAN", "HPLT-TAN"], ["arcsec", "arcsec"]), (["", ""], ["", ""])],
+)
+def test_grid_lines_match_wcsaxes(ctype, cunit):
+    # Recompute the grid lines of a drawn WCSAxes from plain numpy inputs,
+    # for longitude and latitude, and for scalar coordinates. As for the
+    # ticks, WCSAxes uses grid_lines too, so this checks the inputs, not the
+    # sampling.
+    wcs = WCS(naxis=2)
+    wcs.wcs.ctype = ctype
+    wcs.wcs.cunit = cunit
+    wcs.wcs.cdelt = [0.33, 0.33]
+    wcs.wcs.crpix = [250, 250]
+    wcs.wcs.crval = [-300, 200]
+    roll = np.radians(20)
+    wcs.wcs.pc = [[np.cos(roll), -np.sin(roll)], [np.sin(roll), np.cos(roll)]]
+
+    fig = Figure(figsize=(6, 6))
+    canvas = FigureCanvasAgg(fig)
+    ax = fig.add_subplot(projection=wcs)
+    ax.set_xlim(-0.5, 499.5)
+    ax.set_ylim(-0.5, 499.5)
+    ax.coords.grid()
+    canvas.draw()
+
+    def pixel_to_world(pixel):
+        return np.array(wcs.pixel_to_world_values(*pixel.T)).T
+
+    def world_to_pixel(world):
+        return np.array(wcs.world_to_pixel_values(*world.T)).T
+
+    coords = [ax.coords[0], ax.coords[1]]
+    ranges = find_coordinate_range(
+        SimpleNamespace(transform=pixel_to_world),
+        [-0.5, 499.5, -0.5, 499.5],
+        [coord.coord_type for coord in coords],
+        [coord.coord_unit for coord in coords],
+        [coord.coord_wrap for coord in coords],
+    )
+
+    for i, coord in enumerate(coords):
+        spec = CoordSpec(
+            coord_index=i,
+            coord_type=coord.coord_type,
+            coord_unit=coord.coord_unit,
+            coord_wrap=coord.coord_wrap,
+            coord_scale_to_deg=None,
+            locator=coord.locator,
+            formatter=coord.formatter,
+            minor_locator=None,
+            minor_frequency=5,
+        )
+        assert spec == coord._layout_spec()
+        lines = grid_lines(
+            spec, ranges, conf.grid_samples, pixel_to_world, world_to_pixel
+        )
+        assert len(lines) == len(coord._grid_lines) > 0
+        for (pixel, codes), path in zip(lines, coord._grid_lines, strict=True):
+            assert_array_equal(pixel, path.vertices)
+            assert_array_equal(codes, path.codes)

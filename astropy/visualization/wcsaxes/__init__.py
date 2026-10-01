@@ -4,8 +4,8 @@ from astropy import config as _config
 from astropy.utils.compat.optional_deps import HAS_MATPLOTLIB as _HAS_MATPLOTLIB
 
 # The public API needs matplotlib. The private _layout module, which computes
-# the tick geometry, needs only numpy and astropy, so the package itself has
-# to be importable without matplotlib.
+# the tick, grid and label geometry, needs only numpy and astropy, so the
+# package itself has to be importable without matplotlib.
 if _HAS_MATPLOTLIB:
     from .coordinate_helpers import CoordinateHelper
     from .coordinates_map import CoordinatesMap

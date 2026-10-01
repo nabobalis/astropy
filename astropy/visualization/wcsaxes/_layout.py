@@ -4,10 +4,11 @@ Tick, grid and label geometry for WCSAxes that does not depend on matplotlib.
 
 This private module works out where the ticks of a coordinate cross the
 spines of a frame, in which direction they point, where its grid lines run,
-and where its tick labels go. It imports only numpy and astropy. The world
-coordinate transform, the display transform, the locator, the formatter and
-the text measurement all come in as callables, so a toolkit other than
-matplotlib can draw the same ticks, grid lines and tick labels as WCSAxes.
+and where its tick labels and axis labels go. It imports only numpy and
+astropy. The world coordinate transform, the display transform, the
+locator, the formatter and the text measurement all come in as callables,
+so a toolkit other than matplotlib can draw the same ticks, grid lines and
+labels as WCSAxes.
 
 Conventions:
 
@@ -46,6 +47,7 @@ __all__ = [
     "SpineArrays",
     "TickTable",
     "anchor_tick_labels",
+    "axis_label_position",
     "count_overlaps",
     "find_start_of_last_number",
     "grid_lines",
@@ -57,6 +59,7 @@ __all__ = [
     "simplify_labels",
     "sort_labels",
     "sort_using",
+    "spine_midpoint",
     "spine_normal_angle",
     "tick_labels",
     "wrap_angle_at",
@@ -122,6 +125,39 @@ def spine_normal_angle(pixel):
     dx = pixel[1:, 0] - pixel[:-1, 0]
     dy = pixel[1:, 1] - pixel[:-1, 1]
     return np.degrees(np.arctan2(dx, -dy))
+
+
+def spine_midpoint(pixel, normal_angle):
+    """
+    Find the point halfway along a spine, and the outward normal there.
+
+    Parameters
+    ----------
+    pixel : ndarray
+        The spine, an (N, 2) array in display pixels.
+    normal_angle : ndarray
+        The (N - 1) inward normals of the spine, from `spine_normal_angle`.
+
+    Returns
+    -------
+    tuple
+        The display position ``x`` and ``y`` of the midpoint, and the
+        outward normal of the segment it lies on, in degrees.
+    """
+    x_disp, y_disp = pixel[:, 0], pixel[:, 1]
+    # Get distance along the path
+    d = np.hstack(
+        [0.0, np.cumsum(np.sqrt(np.diff(x_disp) ** 2 + np.diff(y_disp) ** 2))]
+    )
+    xcen = np.interp(d[-1] / 2.0, d, x_disp)
+    ycen = np.interp(d[-1] / 2.0, d, y_disp)
+
+    # Find segment along which the mid-point lies
+    imin = np.searchsorted(d, d[-1] / 2.0) - 1
+
+    # Find normal of the axis label facing outwards on that segment
+    normal_angle = normal_angle[imin] + 180.0
+    return xcen, ycen, normal_angle
 
 
 class SpineArrays(NamedTuple):
@@ -1060,3 +1096,79 @@ def keep_tick_labels(labels, visible_axes, extent, exclude_overlapping, existing
             if not exclude_overlapping or count_overlaps(bb, kept + existing) == 0:
                 kept.append(bb)
                 yield axis, i, bb
+
+
+def axis_label_position(
+    axis, x, y, normal_angle, padding, text_size, rectangular, union
+):
+    """
+    Place the axis label of a coordinate on a spine.
+
+    Parameters
+    ----------
+    axis : str
+        The name of the spine. On a rectangular frame, ``'l'``, ``'r'``,
+        ``'b'`` and ``'t'`` move the label out from the spine; any other name
+        leaves it on the spine.
+    x, y : float
+        The midpoint of the spine in display pixels, from `spine_midpoint`.
+    normal_angle : float
+        The outward normal at the midpoint in degrees, from `spine_midpoint`.
+    padding : float
+        The gap between the label and the spine, or the tick labels, in
+        display pixels.
+    text_size : float
+        The font size of the label in display pixels.
+    rectangular : bool
+        Whether the frame is rectangular. If not, the label is moved out
+        along the normal by the padding plus one and a half times the font
+        size.
+    union : array-like or None
+        On a rectangular frame, the box around the tick labels, in display
+        pixels, that the label is placed beyond. If None, the label is placed
+        from the spine.
+
+    Returns
+    -------
+    tuple
+        The display position ``x`` and ``y`` of the centre of the label, and
+        its rotation in degrees.
+    """
+    label_angle = (normal_angle - 90.0) % 360.0
+    if 135 < label_angle < 225:
+        label_angle += 180
+
+    # Find label position by looking at the bounding box of ticks'
+    # labels and the image. It sets the default padding at 1 times the
+    # axis label font size which can also be changed by setting
+    # the minpad parameter.
+
+    if rectangular:
+        if union is not None:
+            x0, y0, x1, y1 = np.asarray(union, dtype=float).reshape(4)
+
+        if axis == "l":
+            if union is not None:
+                x = x0
+            x = x - padding
+
+        elif axis == "r":
+            if union is not None:
+                x = x1
+            x = x + padding
+
+        elif axis == "b":
+            if union is not None:
+                y = y0
+            y = y - padding
+
+        elif axis == "t":
+            if union is not None:
+                y = y1
+            y = y + padding
+
+    else:  # arbitrary axis
+        x = x + np.cos(np.radians(normal_angle)) * (padding + text_size * 1.5)
+        y = y + np.sin(np.radians(normal_angle)) * (padding + text_size * 1.5)
+
+    return x, y, label_angle

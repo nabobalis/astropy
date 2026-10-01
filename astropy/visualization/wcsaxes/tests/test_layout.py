@@ -1,7 +1,7 @@
 # Licensed under a 3-clause BSD style license - see LICENSE.rst
 """
-Tests for the tick, grid and tick label geometry in ``wcsaxes._layout``,
-which does not need matplotlib.
+Tests for the tick, grid and label geometry in ``wcsaxes._layout``, which
+does not need matplotlib.
 """
 
 import json
@@ -42,7 +42,12 @@ from astropy.wcs import WCS
 # that is 7 pixels wide per character and 12 pixels high. Labels are shown on
 # all four spines and overlapping labels are dropped. They avoid a box drawn
 # before, which covers the middle label on the bottom spine of the TAN image,
-# and the labels of the second coordinate avoid those of the first.
+# and the labels of the second coordinate avoid those of the first. Each
+# coordinate also gets an axis label on each spine that has its tick labels,
+# with a padding of 12 pixels and a font size of 10 pixels. The frame of the
+# TAN image is taken as rectangular, so its axis labels go beyond the box
+# around the tick labels kept so far. That of the AIT image is not, so its
+# axis labels move out along the spine normal.
 NO_MATPLOTLIB = """
 import json
 import sys
@@ -57,12 +62,14 @@ from astropy.visualization.wcsaxes._layout import (
     CoordSpec,
     SpineArrays,
     anchor_tick_labels,
+    axis_label_position,
     grid_lines,
     keep_tick_labels,
     place_ticks,
     resample_spine,
     simplify_labels,
     sort_labels,
+    spine_midpoint,
     spine_normal_angle,
     tick_labels,
 )
@@ -110,7 +117,7 @@ def measure(text, x, y):
     return 7.0 * len(text), 12.0
 
 
-def layout(ctype, crval, cdelt, shape, spacing):
+def layout(ctype, crval, cdelt, shape, spacing, rectangular):
     wcs = WCS(naxis=2)
     wcs.wcs.ctype = ctype
     wcs.wcs.crval = crval
@@ -167,6 +174,20 @@ def layout(ctype, crval, cdelt, shape, spacing):
         kept = list(keep_tick_labels(labels, list("brtl"), extent, True, existing))
         existing += [box for _, _, box in kept]
 
+        boxes = np.array(existing[1:])
+        union = (*boxes[:, :2].min(axis=0), *boxes[:, 2:].max(axis=0))
+        axis_label = {}
+        for axis in labels.text:
+            # As Spine._halfway_x_y_angle, on the outline before resampling
+            pixel = to_display(np.array(outlines[axis]))
+            x, y, normal = spine_midpoint(pixel, spine_normal_angle(pixel))
+            axis_label[axis] = [
+                float(value)
+                for value in axis_label_position(
+                    axis, x, y, normal, 12.0, 10.0, rectangular, union
+                )
+            ]
+
         result.append(
             {
                 "axis": "".join(placed.major.axis),
@@ -186,20 +207,25 @@ def layout(ctype, crval, cdelt, shape, spacing):
                     [float(x), float(y)] for xy in anchors.values() for x, y in xy.values()
                 ],
                 "kept": " ".join(f"{axis}{i}" for axis, i, _ in kept),
+                "axis_label": axis_label,
             }
         )
     return result
 
 
-tan = layout(["RA---TAN", "DEC--TAN"], [266.4, -28.9], [-0.002, 0.002], (100, 80), [0.05, 0.05])
-ait = layout(["GLON-AIT", "GLAT-AIT"], [0, 0], [-1, 1], (300, 150), [60, 50])
+tan = layout(
+    ["RA---TAN", "DEC--TAN"], [266.4, -28.9], [-0.002, 0.002], (100, 80), [0.05, 0.05], True
+)
+ait = layout(["GLON-AIT", "GLAT-AIT"], [0, 0], [-1, 1], (300, 150), [60, 50], False)
 print(json.dumps({"tan": tan, "ait": ait}))
 """
 
 # The output of NO_MATPLOTLIB, rounded to 6 decimals. For each grid line it
 # gives the indices of the MOVETO codes, and the first, middle and last vertex.
 # For the tick labels it gives the text after simplification, the display
-# position of each label centre, and the labels kept, as spine and index.
+# position of each label centre, and the labels kept, as spine and index. For
+# the axis labels it gives the display position of the centre and the
+# rotation.
 EXPECTED = {
     "tan": [
         {
@@ -259,6 +285,8 @@ EXPECTED = {
             ],
             # The box drawn before hides the middle label on the bottom spine.
             "kept": "b0 b1 b3 b4 t0 t1 t2 t3 t4",
+            # Beyond the tick labels, and turned upright on the bottom spine
+            "axis_label": {"b": [109.0, -23.0, 360.0], "t": [109.0, 201.0, 0.0]},
         },
         {
             "axis": "rrrlll",
@@ -300,6 +328,7 @@ EXPECTED = {
                 [-9.5, 38.944068],
             ],
             "kept": "r0 r1 r2 l0 l1 l2",
+            "axis_label": {"r": [278.0, 89.0, 270.0], "l": [-60.0, 89.0, 90.0]},
         },
     ],
     "ait": [
@@ -363,6 +392,9 @@ EXPECTED = {
             ],
             # Every other label overlaps its neighbour and is dropped.
             "kept": "b0 b2 b4 t0 t2 t4",
+            # 27 pixels, the padding plus 1.5 times the font size, out from
+            # the midpoint of the spine
+            "axis_label": {"b": [309.0, -18.0, 360.0], "t": [309.0, 336.0, 0.0]},
         },
         {
             "axis": "rl",
@@ -384,6 +416,7 @@ EXPECTED = {
             "label_text": {"r": ["0d00m"], "l": ["0d00m"]},
             "anchor": [[634.5, 159.000003], [-16.5, 159.000003]],
             "kept": "r0 l0",
+            "axis_label": {"r": [636.0, 159.0, 270.0], "l": [-18.0, 159.0, 90.0]},
         },
     ],
 }
@@ -413,6 +446,9 @@ def test_layout_without_matplotlib():
             assert actual["label_text"] == expected["label_text"]
             assert_allclose(actual["anchor"], expected["anchor"], rtol=0, atol=1e-6)
             assert actual["kept"] == expected["kept"]
+            assert actual["axis_label"].keys() == expected["axis_label"].keys()
+            for axis, position in expected["axis_label"].items():
+                assert_allclose(actual["axis_label"][axis], position, rtol=0, atol=1e-6)
 
 
 def test_path_codes_match_matplotlib():

@@ -2,10 +2,10 @@
 
 
 import matplotlib.transforms as mtransforms
-import numpy as np
 from matplotlib import rcParams
 from matplotlib.text import Text
 
+from ._layout import axis_label_position
 from .frame import RectangularFrame
 
 
@@ -95,17 +95,9 @@ class AxisLabels(Text):
             # parameter.
             x, y, normal_angle = self._frame[axis]._halfway_x_y_angle()
 
-            label_angle = (normal_angle - 90.0) % 360.0
-            if 135 < label_angle < 225:
-                label_angle += 180
-            self.set_rotation(label_angle)
-
-            # Find label position by looking at the bounding box of ticks'
-            # labels and the image. It sets the default padding at 1 times the
-            # axis label font size which can also be changed by setting
-            # the minpad parameter.
-
-            if isinstance(self._frame, RectangularFrame):
+            rectangular = isinstance(self._frame, RectangularFrame)
+            union = None
+            if rectangular:
                 if (
                     len(ticklabels_bbox_list) > 0
                     and ticklabels_bbox_list[0] is not None
@@ -119,31 +111,13 @@ class AxisLabels(Text):
                 visible = (
                     axis in visible_ticks and coord_ticklabels_bbox[axis][0] is not None
                 )
+                if visible:
+                    union = coord_ticklabels_bbox[axis][0]
 
-                if axis == "l":
-                    if visible:
-                        x = coord_ticklabels_bbox[axis][0].xmin
-                    x = x - padding
-
-                elif axis == "r":
-                    if visible:
-                        x = coord_ticklabels_bbox[axis][0].x1
-                    x = x + padding
-
-                elif axis == "b":
-                    if visible:
-                        y = coord_ticklabels_bbox[axis][0].ymin
-                    y = y - padding
-
-                elif axis == "t":
-                    if visible:
-                        y = coord_ticklabels_bbox[axis][0].y1
-                    y = y + padding
-
-            else:  # arbitrary axis
-                x = x + np.cos(np.radians(normal_angle)) * (padding + text_size * 1.5)
-                y = y + np.sin(np.radians(normal_angle)) * (padding + text_size * 1.5)
-
+            x, y, label_angle = axis_label_position(
+                axis, x, y, normal_angle, padding, text_size, rectangular, union
+            )
+            self.set_rotation(label_angle)
             self.set_position((x, y))
             super().draw(renderer)
 

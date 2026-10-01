@@ -12,7 +12,7 @@ from matplotlib.patches import PathPatch
 
 from astropy.utils.exceptions import AstropyDeprecationWarning
 
-from ._layout import resample_spine, spine_normal_angle
+from ._layout import resample_spine, spine_midpoint, spine_normal_angle
 
 __all__ = [
     "BaseFrame",
@@ -110,21 +110,7 @@ class Spine:
         """
         Return the x, y, normal_angle values halfway along the spine.
         """
-        pixel = self._get_pixel()
-        x_disp, y_disp = pixel[:, 0], pixel[:, 1]
-        # Get distance along the path
-        d = np.hstack(
-            [0.0, np.cumsum(np.sqrt(np.diff(x_disp) ** 2 + np.diff(y_disp) ** 2))]
-        )
-        xcen = np.interp(d[-1] / 2.0, d, x_disp)
-        ycen = np.interp(d[-1] / 2.0, d, y_disp)
-
-        # Find segment along which the mid-point lies
-        imin = np.searchsorted(d, d[-1] / 2.0) - 1
-
-        # Find normal of the axis label facing outwards on that segment
-        normal_angle = self.normal_angle[imin] + 180.0
-        return xcen, ycen, normal_angle
+        return spine_midpoint(self._get_pixel(), self.normal_angle)
 
 
 class SpineXAligned(Spine):

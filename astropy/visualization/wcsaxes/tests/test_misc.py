@@ -951,7 +951,7 @@ def test_public_api_without_matplotlib():
         for name, value in vars(wcsaxes).items()
         if not name.startswith("_")
         and not inspect.ismodule(value)
-        and name not in ("Conf", "conf")
+        and name not in ("Conf", "conf", "custom_ucd_coord_meta_mapping")
     )
     assert "WCSAxes" in names
     code = f"""
@@ -960,7 +960,12 @@ import sys
 sys.modules["matplotlib"] = None
 
 from astropy.visualization import wcsaxes
-from astropy.visualization.wcsaxes import _layout, conf
+from astropy.visualization.wcsaxes import (
+    _layout,
+    _model,
+    conf,
+    custom_ucd_coord_meta_mapping,
+)
 
 # Walking astropy's packages, as generate_config does, imports this one too.
 import astropy.visualization.wcsaxes.tests

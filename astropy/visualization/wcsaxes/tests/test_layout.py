@@ -13,6 +13,7 @@ cannot be imported.
 
 import subprocess
 import sys
+from functools import partial
 from types import SimpleNamespace
 
 import numpy as np
@@ -39,19 +40,9 @@ from astropy.visualization.wcsaxes._layout import (
     spine_midpoint,
     spine_normal_angle,
 )
+from astropy.visualization.wcsaxes._model import wcs_pixel_to_world, wcs_world_to_pixel
 from astropy.visualization.wcsaxes.coordinate_range import find_coordinate_range
 from astropy.wcs import WCS
-
-
-class PixelToWorld:
-    def __init__(self, wcs):
-        self.wcs = wcs
-
-    def transform(self, pixel):
-        return np.array(self.wcs.pixel_to_world_values(*pixel.T)).T
-
-    def world_to_pixel(self, world):
-        return np.array(self.wcs.world_to_pixel_values(*world.T)).T
 
 
 def to_display(xy):
@@ -100,9 +91,10 @@ def layout(ctype, crval, cdelt, shape, spacing, rectangular):
     wcs.wcs.crval = crval
     wcs.wcs.cdelt = cdelt
     wcs.wcs.crpix = [(shape[0] + 1) / 2, (shape[1] + 1) / 2]
-    p2w = PixelToWorld(wcs)
+    p2w = partial(wcs_pixel_to_world, wcs)
+    w2p = partial(wcs_world_to_pixel, wcs)
     x0, x1, y0, y1 = -0.5, shape[0] - 0.5, -0.5, shape[1] - 0.5
-    spines = rectangular_spines((x0, x1), (y0, y1), 100, p2w.transform, to_display)
+    spines = rectangular_spines((x0, x1), (y0, y1), 100, p2w, to_display)
     types = ["longitude", "latitude"]
     wraps = [360 * u.deg, None]
     ranges = find_coordinate_range(p2w, [x0, x1, y0, y1], types, [u.deg] * 2, wraps)
@@ -120,10 +112,8 @@ def layout(ctype, crval, cdelt, shape, spacing, rectangular):
             minor_locator=minor_locator,
             minor_frequency=2,
         )
-        placed = place_ticks(
-            spec, ranges[i], spines, p2w.transform, to_display, from_display
-        )
-        lines = grid_lines(spec, ranges, 50, p2w.transform, p2w.world_to_pixel)
+        placed = place_ticks(spec, ranges[i], spines, p2w, to_display, from_display)
+        lines = grid_lines(spec, ranges, 50, p2w, w2p)
 
         labels = label_store(placed)
         sort_labels(labels)

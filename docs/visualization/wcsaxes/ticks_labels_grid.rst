@@ -340,6 +340,21 @@ a single ``#``:
 The ``#`` indicates that the positions should be re-assigned dynamically every
 time the axes are drawn.
 
+The ticks that would be drawn, and their labels, can be read back with
+:meth:`~astropy.visualization.wcsaxes.coordinate_helpers.CoordinateHelper.get_ticks` and
+:meth:`~astropy.visualization.wcsaxes.coordinate_helpers.CoordinateHelper.get_ticklabels`.
+Each returns a dictionary with one entry per spine of the frame, computed from
+the current axes limits, so they can be called before the figure is drawn:
+
+.. plot::
+   :context:
+   :nofigs:
+   :include-source:
+   :align: center
+
+    ticks = lon.get_ticks()
+    labels = lon.get_ticklabels()
+
 On plots with elliptical frames, three alternate tick positions are supported:
 ``c`` for the outer circular or elliptical border, ``h`` for the horizontal
 axis (which is usually the major axis of the ellipse), and ``v`` for the

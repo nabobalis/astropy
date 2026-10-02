@@ -1,15 +1,20 @@
 # Licensed under a 3-clause BSD style license - see LICENSE.rst
 
 # The following few lines skip this module when running tests if matplotlib is
-# not available (and will have no impact otherwise)
+# not available (and will have no impact otherwise). pytest is slow to import,
+# so it is only imported when matplotlib is missing.
 
 try:
-    import pytest
-
-    pytest.importorskip("matplotlib")
-    del pytest
+    import matplotlib as mpl
 except ImportError:
-    pass
+    try:
+        import pytest
+
+        pytest.importorskip("matplotlib")
+    except ImportError:
+        pass
+else:
+    del mpl
 
 from astropy import config as _config
 

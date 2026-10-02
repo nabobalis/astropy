@@ -1,4 +1,6 @@
 # Licensed under a 3-clause BSD style license - see LICENSE.rst
+import subprocess
+import sys
 import warnings
 from unittest.mock import MagicMock
 
@@ -937,3 +939,15 @@ def test_auto_assign_coord_positions_no_consistent_option(
     ax.coords[1].set_ticklabel_position("#")
 
     fig.savefig(tmp_path / "plot.png")
+
+
+@pytest.mark.skipif(
+    sys.platform == "emscripten", reason="subprocesses not supported on emscripten"
+)
+def test_import_does_not_import_pytest():
+    # pytest is slow to import, so importing wcsaxes should only pull it in
+    # when matplotlib is missing (to skip the tests).
+    cmd = (
+        "import sys, astropy.visualization.wcsaxes; assert 'pytest' not in sys.modules"
+    )
+    subprocess.run([sys.executable, "-c", cmd], check=True)

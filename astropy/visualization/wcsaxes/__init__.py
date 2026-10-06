@@ -1,24 +1,37 @@
 # Licensed under a 3-clause BSD style license - see LICENSE.rst
 
-# The following few lines skip this module when running tests if matplotlib is
-# not available (and will have no impact otherwise)
-
-try:
-    import pytest
-
-    pytest.importorskip("matplotlib")
-    del pytest
-except ImportError:
-    pass
-
 from astropy import config as _config
+from astropy.utils.compat.optional_deps import HAS_MATPLOTLIB as _HAS_MATPLOTLIB
 
-from .coordinate_helpers import CoordinateHelper
-from .coordinates_map import CoordinatesMap
-from .core import *
-from .helpers import *
-from .patches import *
-from .wcsapi import custom_ucd_coord_meta_mapping
+# The public API needs matplotlib. The private _layout module, which computes
+# the tick, grid and label geometry, needs only numpy and astropy, so the
+# package itself has to be importable without matplotlib.
+if _HAS_MATPLOTLIB:
+    from .coordinate_helpers import CoordinateHelper
+    from .coordinates_map import CoordinatesMap
+    from .core import *
+    from .helpers import *
+    from .patches import *
+    from .wcsapi import custom_ucd_coord_meta_mapping
+else:
+
+    def __getattr__(name):
+        # Say what is missing, rather than "cannot import name".
+        if name in {
+            "CoordinateHelper",
+            "CoordinatesMap",
+            "Quadrangle",
+            "SphericalCircle",
+            "WCSAxes",
+            "WCSAxesSubplot",
+            "add_beam",
+            "add_scalebar",
+            "custom_ucd_coord_meta_mapping",
+        }:
+            raise ModuleNotFoundError(
+                f"{__name__}.{name} requires matplotlib", name="matplotlib"
+            )
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class Conf(_config.ConfigNamespace):

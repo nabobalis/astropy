@@ -1,4 +1,7 @@
 # Licensed under a 3-clause BSD style license - see LICENSE.rst
+import inspect
+import subprocess
+import sys
 import warnings
 from unittest.mock import MagicMock
 
@@ -16,6 +19,7 @@ from astropy import units as u
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.utils.data import get_pkg_data_filename
+from astropy.visualization import wcsaxes
 from astropy.visualization.wcsaxes.core import WCSAxes
 from astropy.visualization.wcsaxes.frame import (
     EllipticalFrame,
@@ -937,3 +941,46 @@ def test_auto_assign_coord_positions_no_consistent_option(
     ax.coords[1].set_ticklabel_position("#")
 
     fig.savefig(tmp_path / "plot.png")
+
+
+def test_public_api_without_matplotlib():
+    # The package imports without matplotlib, so that its _layout module can
+    # be used, but each public name says that it needs matplotlib.
+    names = sorted(
+        name
+        for name, value in vars(wcsaxes).items()
+        if not name.startswith("_")
+        and not inspect.ismodule(value)
+        and name not in ("Conf", "conf")
+    )
+    assert "WCSAxes" in names
+    code = f"""
+import sys
+
+sys.modules["matplotlib"] = None
+
+from astropy.visualization import wcsaxes
+from astropy.visualization.wcsaxes import _layout, conf
+
+# Walking astropy's packages, as generate_config does, imports this one too.
+import astropy.visualization.wcsaxes.tests
+
+for name in {names!r}:
+    try:
+        getattr(wcsaxes, name)
+    except ModuleNotFoundError as exc:
+        assert exc.name == "matplotlib", name
+        assert str(exc) == f"astropy.visualization.wcsaxes.{{name}} requires matplotlib"
+    else:
+        raise AssertionError(name)
+try:
+    wcsaxes.missing
+except AttributeError:
+    pass
+else:
+    raise AssertionError("missing")
+"""
+    proc = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=False
+    )
+    assert proc.returncode == 0, proc.stderr

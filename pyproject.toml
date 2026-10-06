@@ -312,6 +312,7 @@ doctest_subpackage_requires = [
     "docs/coordinates/example_gallery_plot_sgr_coordinate_frame.rst = matplotlib",
     "docs/io/unified_table_hdf5.rst = h5py",
     "docs/io/unified_table_parquet.rst = pandas pyarrow",
+    "astropy/visualization/wcsaxes/* = matplotlib",
 ]
 markers = [
     "mpl_image_compare",

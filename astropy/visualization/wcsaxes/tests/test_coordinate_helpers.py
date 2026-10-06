@@ -8,6 +8,7 @@ import pytest
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 from matplotlib.path import Path
+from numpy.testing import assert_allclose, assert_array_equal
 
 from astropy import units as u
 from astropy.io import fits
@@ -19,6 +20,46 @@ from astropy.wcs import WCS
 from astropy.wcs.wcsapi import BaseLowLevelWCS
 
 MSX_HEADER = fits.Header.fromtextfile(get_pkg_data_filename("data/msx_header"))
+
+
+def test_get_ticks_and_ticklabels(ignore_matplotlibrc):
+    # The ticks and labels can be read before a draw, and are those drawn.
+    # See https://github.com/astropy/astropy/issues/16464
+    wcs = WCS(naxis=2)
+    wcs.wcs.ctype = ["GLON-TAN", "GLAT-TAN"]
+    wcs.wcs.crval = [10, 20]
+    wcs.wcs.crpix = [50.5, 25.5]
+    wcs.wcs.cdelt = [-0.01, 0.01]
+    fig = Figure()
+    FigureCanvasAgg(fig)
+    ax = fig.add_subplot(projection=wcs)
+    ax.set_xlim(-0.5, 99.5)
+    ax.set_ylim(-0.5, 49.5)
+    lon = ax.coords[0]
+
+    ticks = lon.get_ticks()
+    labels = lon.get_ticklabels()
+    assert list(ticks) == list(labels) == ["b", "r", "t", "l"]
+    for axis in ticks:
+        assert ticks[axis].shape == (len(labels[axis]), 2)
+    # Longitude ticks cross the bottom and top spines, and the one at the
+    # reference column is labelled with the reference value.
+    assert len(ticks["b"]) > 1
+    assert_allclose(ticks["b"][:, 1], -0.5)
+    assert_allclose(ticks["t"][:, 1], 49.5)
+    i = np.argmin(abs(ticks["b"][:, 0] - 49.5))
+    assert_allclose(ticks["b"][i, 0], 49.5, atol=1e-6)
+    assert labels["b"][i] == lon.format_coord(10.0)
+    # Minor ticks are only computed when they are displayed
+    assert all(len(pixel) == 0 for pixel in lon.get_ticks(minor=True).values())
+    lon.display_minor_ticks(True)
+    assert len(lon.get_ticks(minor=True)["b"]) > len(ticks["b"])
+
+    fig.canvas.draw()
+    for axis in ticks:
+        drawn = np.array(lon._ticks.pixel[axis]).reshape(-1, 2)
+        assert_array_equal(ticks[axis], drawn)
+    assert lon.get_ticklabels() == labels
 
 
 def test_getaxislabel(ignore_matplotlibrc):

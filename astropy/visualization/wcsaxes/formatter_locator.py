@@ -12,12 +12,11 @@ import re
 import warnings
 
 import numpy as np
-from matplotlib import rcParams
-from matplotlib.ticker import Formatter
 
 from astropy import units as u
 from astropy.coordinates import Angle
 from astropy.units import UnitsError
+from astropy.utils.compat.optional_deps import HAS_MATPLOTLIB
 
 DMS_RE = re.compile(r"^dd(:mm(:ss(\.(s)+)?)?)?$")
 HMS_RE = re.compile(r"^hh(:mm(:ss(\.(s)+)?)?)?$")
@@ -58,11 +57,23 @@ CUSTOM_UNITS = {
 }
 
 
+def _rcparam(key):
+    # matplotlib's rcParams, or their defaults when matplotlib is not
+    # installed, so that another plotting toolkit can use these classes.
+    if HAS_MATPLOTLIB:
+        from matplotlib import rcParams
+
+        return rcParams[key]
+    return {"axes.unicode_minus": True, "text.usetex": False}[key]
+
+
 def _fix_minus(labels: list[str], /) -> list[str]:
-    # correctly support axes.unicode_minus, but do it in a
-    # way that preserves arbitrary separators: only fix the leading character
-    # see https://github.com/astropy/astropy/issues/15898
-    return [Formatter.fix_minus(s[0]) + s[1:] for s in labels]
+    # correctly support axes.unicode_minus, as matplotlib's Formatter.fix_minus
+    # does, but in a way that preserves arbitrary separators: only fix the
+    # leading character. See https://github.com/astropy/astropy/issues/15898
+    if not _rcparam("axes.unicode_minus"):
+        return labels
+    return [("\N{MINUS SIGN}" + s[1:]) if s[:1] == "-" else s for s in labels]
 
 
 class BaseFormatterLocator:
@@ -487,7 +498,7 @@ class AngleFormatterLocator(BaseFormatterLocator):
                 precision = self._precision
 
             is_latex = format == "latex" or (
-                format == "auto" and rcParams["text.usetex"]
+                format == "auto" and _rcparam("text.usetex")
             )
 
             if decimal:

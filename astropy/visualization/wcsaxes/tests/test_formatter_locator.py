@@ -686,6 +686,20 @@ def test_scalar_degenerate_range_formatter():
     assert fl.formatter([5] * u.m, spacing) == ["5"]
 
 
+@pytest.mark.parametrize(
+    "cls, unit", [(AngleFormatterLocator, u.deg), (ScalarFormatterLocator, u.s)]
+)
+def test_non_finite_range(cls, unit):
+    # Regression test for a bug where the locators raised a ValueError for a
+    # coordinate range that is not finite, e.g. for a coordinate that is NaN
+    # over the whole view.
+    fl = cls(unit=unit)
+    values, spacing = fl.locator(np.nan, np.nan)
+    assert len(values) == 0
+    assert np.isfinite(spacing)
+    assert len(fl.minor_locator(spacing, 5, np.nan, np.nan)) == 0
+
+
 def test_scalar_percent_format_uses_format_unit():
     # Regression test for a bug where a '%'-style format ignored the format
     # unit and instead formatted the coordinate's native unit.

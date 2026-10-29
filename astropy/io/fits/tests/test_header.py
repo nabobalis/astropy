@@ -3171,6 +3171,28 @@ class TestRecordValuedKeywordCards(FitsTestCase):
         with pytest.raises(KeyError):
             h["FOO."]
 
+    @pytest.mark.parametrize("enabled", [True, False])
+    def test_enable_record_valued_keyword_cards(self, enabled):
+        """
+        A card image without ': ' is a normal card, and a card made from a
+        keyword and a 'field-specifier: value' string is a RVKC only while
+        `fits.conf.enable_record_valued_keyword_cards` is True.
+        """
+
+        with fits.conf.set_temp("enable_record_valued_keyword_cards", enabled):
+            c = fits.Card.fromstring("DP1     = 'AXIS.1:2'")
+            assert c.keyword == "DP1"
+            assert c.value == "AXIS.1:2"
+            assert c.field_specifier is None
+
+            c = fits.Card("DP1", "AXIS.1: 2")
+            if enabled:
+                assert c.keyword == "DP1.AXIS.1"
+                assert c.value == 2.0
+            else:
+                assert c.keyword == "DP1"
+                assert c.value == "AXIS.1: 2"
+
     def test_fitsheader_script(self):
         """Tests the basic functionality of the `fitsheader` script."""
         # Can an extension by specified by the EXTNAME keyword?

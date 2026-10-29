@@ -150,7 +150,11 @@ class BaseFormatterLocator:
         self._values = None
 
     def minor_locator(self, spacing, frequency, value_min, value_max):
-        if self.values is not None or self.number == 0:
+        if (
+            self.values is not None
+            or self.number == 0
+            or not np.isfinite([value_min, value_max]).all()
+        ):
             return [] * self._unit
 
         minor_spacing = spacing.value / frequency
@@ -392,8 +396,9 @@ class AngleFormatterLocator(BaseFormatterLocator):
             # don't locate any ticks. This can occur for example when taking a
             # slice for a cube (along the dimension sliced). We return a
             # non-zero spacing in case the caller needs to format a single
-            # coordinate, e.g. for mousover.
-            if value_min == value_max:
+            # coordinate, e.g. for mousover. We do the same if the range is not
+            # finite, e.g. for a coordinate that is NaN over the whole view.
+            if value_min == value_max or not np.isfinite([value_min, value_max]).all():
                 return [] * self._unit, 1 * u.arcsec
 
             if self.spacing is not None:
@@ -656,8 +661,9 @@ class ScalarFormatterLocator(BaseFormatterLocator):
             # don't locate any ticks. This can occur for example when taking a
             # slice for a cube (along the dimension sliced). We return a
             # non-zero spacing in case the caller needs to format a single
-            # coordinate, e.g. for mouseover.
-            if value_min == value_max:
+            # coordinate, e.g. for mouseover. We do the same if the range is not
+            # finite, e.g. for a coordinate that is NaN over the whole view.
+            if value_min == value_max or not np.isfinite([value_min, value_max]).all():
                 return [] * self._unit, 1 * self._unit
 
             if self.spacing is not None:

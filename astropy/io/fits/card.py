@@ -297,7 +297,8 @@ class Card(_Verify):
             else:
                 self._value = value = UNDEFINED
 
-        if conf.strip_header_whitespace and isinstance(value, str):
+        # Test the type first, as reading the config is slow (see #12504)
+        if isinstance(value, str) and conf.strip_header_whitespace:
             value = value.rstrip()
 
         return value
@@ -626,6 +627,11 @@ class Card(_Verify):
             self._check_if_rvkc('DP1.AXIS.1', 2)
             self._check_if_rvkc('DP1     = AXIS.1: 2')
         """
+        # A card image without ': ' cannot be a RVKC; testing for it first
+        # avoids reading the config, which is slow (see #12504), for most cards
+        if len(args) == 1 and ": " not in args[0]:
+            return False
+
         if not conf.enable_record_valued_keyword_cards:
             return False
 

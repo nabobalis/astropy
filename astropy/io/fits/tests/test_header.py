@@ -2397,6 +2397,29 @@ class TestHeaderFunctions(FitsTestCase):
         assert h.cards["FOO"].image.rstrip() == "FOO     = 'Bar      '"
         assert h.cards["QUX"].image.rstrip() == "QUX     = 'Bar        '"
 
+    def test_card_value_config_reads(self, monkeypatch):
+        """
+        Reading the configuration is slow (see
+        https://github.com/astropy/astropy/issues/12504), so reading the
+        values of a parsed header should read it only for the cards it can
+        affect: here `fits.conf.strip_header_whitespace`, for the str value.
+        """
+
+        reads = []
+
+        class CountingConf:
+            def __getattr__(self, name):
+                reads.append(name)
+                return getattr(fits.conf, name)
+
+        monkeypatch.setattr(fits.card, "conf", CountingConf())
+
+        h = fits.Header.fromstring(
+            "A       = 1\nB       = 2.5\nC       = T\nD       = 'Bar  '", sep="\n"
+        )
+        assert [card.value for card in h.cards] == [1, 2.5, True, "Bar"]
+        assert reads == ["strip_header_whitespace"]
+
     def test_keep_duplicate_history_in_orig_header(self):
         """
         Regression test for https://aeon.stsci.edu/ssb/trac/pyfits/ticket/156
